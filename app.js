@@ -771,17 +771,18 @@ function renderAdminSummary(overlay) {
   });
   const sorted = Object.values(groups).sort((a, b) => b.bookings.length - a.bookings.length);
   sorted.forEach(g => {
-    g.bookings.sort((a, b) => a.datetime.localeCompare(b.datetime));
+    const merged = mergeConsecutive(g.bookings);
+    const totalHours = (g.bookings.length * 0.5).toFixed(1).replace(/\.0$/, '');
     wrap.appendChild(el('div', { class: 'summary-student' },
       el('div', { class: 'summary-student-head' },
         el('span', { class: 'summary-student-name' }, g.name),
         el('code', {}, g.code),
-        el('span', { class: 'summary-count' }, `共 ${g.bookings.length} 次`),
+        el('span', { class: 'summary-count' }, `${merged.length} 段 · 共 ${totalHours} 小時`),
       ),
       el('ul', { class: 'summary-bookings' },
-        ...g.bookings.map(b => el('li', {
-          onclick: () => { jumpToWeek(b.dateKey); overlay.remove(); },
-        }, formatBookingLabel(b))),
+        ...merged.map(grp => el('li', {
+          onclick: () => { jumpToWeek(grp.dateKey); overlay.remove(); },
+        }, formatGroupLabel(grp))),
       ),
     ));
   });
@@ -795,25 +796,70 @@ function renderStudentSummary(overlay) {
     wrap.appendChild(el('div', { class: 'empty-msg' }, '你目前沒有預約'));
     return wrap;
   }
-  all.sort((a, b) => a.datetime.localeCompare(b.datetime));
+  const merged = mergeConsecutive(all);
+  const totalHours = (all.length * 0.5).toFixed(1).replace(/\.0$/, '');
   wrap.appendChild(el('div', { class: 'summary-student' },
     el('div', { class: 'summary-student-head' },
       el('span', { class: 'summary-student-name' }, state.studentName),
-      el('span', { class: 'summary-count' }, `共 ${all.length} 次`),
+      el('span', { class: 'summary-count' }, `${merged.length} 段 · 共 ${totalHours} 小時`),
     ),
     el('ul', { class: 'summary-bookings' },
-      ...all.map(b => el('li', {
-        onclick: () => { jumpToWeek(b.dateKey); overlay.remove(); },
-      }, formatBookingLabel(b))),
+      ...merged.map(grp => el('li', {
+        onclick: () => { jumpToWeek(grp.dateKey); overlay.remove(); },
+      }, formatGroupLabel(grp))),
     ),
   ));
   return wrap;
 }
 
-function formatBookingLabel(b) {
-  const [y, m, d] = b.dateKey.split('-').map(Number);
+function timeToMinutes(t) {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function minutesToTime(mins) {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+// 把同學生連續半小時的預約合併成一段
+//   input:  [{ dateKey, time, datetime, invite_code, student_name }, ...]
+//   output: [{ dateKey, startTime, endTime, datetime(=第一格的), ... }, ...]
+function mergeConsecutive(bookings) {
+  if (!bookings.length) return [];
+  const sorted = [...bookings].sort((a, b) => a.datetime.localeCompare(b.datetime));
+  const groups = [];
+  let cur = null;
+  for (const b of sorted) {
+    const startMin = timeToMinutes(b.time);
+    const endMin = startMin + 30;
+    if (cur && cur.dateKey === b.dateKey && cur.endMin === startMin) {
+      cur.endMin = endMin;
+    } else {
+      if (cur) groups.push(cur);
+      cur = {
+        dateKey: b.dateKey,
+        startMin,
+        endMin,
+        invite_code: b.invite_code,
+        student_name: b.student_name,
+        datetime: b.datetime,
+      };
+    }
+  }
+  if (cur) groups.push(cur);
+  return groups.map(g => ({
+    ...g,
+    startTime: minutesToTime(g.startMin),
+    endTime: minutesToTime(g.endMin),
+  }));
+}
+
+function formatGroupLabel(g) {
+  const [y, m, d] = g.dateKey.split('-').map(Number);
   const wk = WEEKDAYS[new Date(y, m - 1, d).getDay()];
-  return `${m}/${d} (週${wk}) ${b.time}`;
+  return `${m}/${d} (週${wk}) ${g.startTime}–${g.endTime}`;
 }
 
 function jumpToWeek(dateKey) {
