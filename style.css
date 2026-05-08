@@ -478,6 +478,14 @@ body.reschedule-mode #app { padding-top: 56px; }
   font-size: 13px;
   line-height: 1.6;
 }
+.mock-banner .mock-line {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mock-banner .mock-hint-line { font-size: 12px; opacity: 0.95; margin-top: 2px; }
 .mock-banner code {
   background: rgba(255,255,255,0.25);
   color: #fff;
@@ -485,14 +493,16 @@ body.reschedule-mode #app { padding-top: 56px; }
   border-radius: 3px;
   font-size: 13px;
 }
+.mock-switch-btn,
 .mock-reset-btn {
   background: rgba(255,255,255,0.25);
   color: #fff;
   padding: 3px 10px;
   border-radius: 4px;
   font-size: 12px;
-  margin-left: 12px;
   cursor: pointer;
   border: none;
 }
+.mock-switch-btn:hover,
 .mock-reset-btn:hover { background: rgba(255,255,255,0.4); }
+.mock-switch-btn { font-weight: 600; }

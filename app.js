@@ -132,7 +132,6 @@ async function init() {
 
   if (isMock) {
     installMockApi();
-    showMockBanner();
   } else if (!API_BASE) {
     renderSetupPage();
     return;
@@ -220,6 +219,7 @@ function renderSetupPage() {
 // Render — Login (學生)
 // =========================================================================
 function renderLogin() {
+  showMockBanner();
   const app = $('#app');
   app.innerHTML = '';
   const input = el('input', {
@@ -273,6 +273,7 @@ function doLogout() {
 // Render — Main
 // =========================================================================
 function renderMain() {
+  showMockBanner();
   const app = $('#app');
   app.innerHTML = '';
   if (!state.weeks) state.weeks = computeWeeks(RANGE_START, RANGE_END);
@@ -857,22 +858,66 @@ const mockData = {
   },
 };
 
+function isMockMode() {
+  return new URLSearchParams(location.search).get('mock') === '1';
+}
+
 function showMockBanner() {
+  if (!isMockMode()) return;
+  const existing = document.querySelector('.mock-banner');
+  if (existing) existing.remove();
+
+  const roleLabel = state.isAdmin ? '老師' : (state.studentName ? `學生 (${state.studentName})` : '學生(未登入)');
+  const switchLabel = state.isAdmin ? '切換為學生' : '切換為老師';
+
   const banner = el('div', { class: 'mock-banner' },
-    '⚠️ 示範模式 — 資料存 localStorage(跨分頁同步,重整保留)。學生碼:',
-    el('code', {}, 'Andrew'),
-    ' / ',
-    el('code', {}, 'Bob'),
-    '。老師後台 ',
-    el('code', {}, '?mock=1&admin=admin'),
-    el('button', { class: 'mock-reset-btn', onclick: resetMockState }, '重置示範資料'),
+    el('div', { class: 'mock-line' },
+      '⚠️ 示範模式 · 身份:',
+      el('strong', {}, roleLabel),
+      el('button', { class: 'mock-switch-btn', onclick: switchMockRole }, switchLabel),
+      el('button', { class: 'mock-reset-btn', onclick: resetMockState }, '重置示範資料'),
+    ),
+    el('div', { class: 'mock-line mock-hint-line' },
+      '預設學生碼:',
+      el('code', {}, 'Andrew'),
+      ' / ',
+      el('code', {}, 'Bob'),
+      ' · 也可以用老師後台「管理邀請碼」自己建',
+    ),
   );
   document.body.insertBefore(banner, document.body.firstChild);
+}
+
+function switchMockRole() {
+  if (state.isAdmin) {
+    state.isAdmin = false;
+    state.adminKey = '';
+    document.body.classList.remove('admin-mode');
+    history.replaceState(null, '', location.pathname + '?mock=1');
+    state.inviteCode = '';
+    state.studentName = '';
+    state.calendar = null;
+    storage.clearInviteCode();
+    renderLogin();
+  } else {
+    state.isAdmin = true;
+    state.adminKey = 'admin';
+    document.body.classList.add('admin-mode');
+    history.replaceState(null, '', location.pathname + '?mock=1&admin=admin');
+    storage.clearInviteCode();
+    state.inviteCode = '';
+    state.studentName = '';
+    state.calendar = null;
+    state.weeks = null;
+    state.selectedWeek = null;
+    loadAdminCalendar().then(ok => { if (ok) renderMain(); });
+  }
 }
 
 function resetMockState() {
   if (!confirm('確定重置示範資料?\n\n所有在 mock 模式建立的學生 / 預約 / 封鎖都會清除,還原到初始示範狀態。')) return;
   localStorage.removeItem(MOCK_STORAGE_KEY);
+  storage.clearInviteCode();
   location.reload();
 }
 
