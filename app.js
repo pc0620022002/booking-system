@@ -233,8 +233,8 @@ function renderLogin() {
   });
   input.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   app.appendChild(el('div', { class: 'login' },
-    el('h1', {}, '課程預約'),
-    el('p', { class: 'login-hint' }, '請輸入老師提供的 8 字邀請碼'),
+    el('h1', {}, 'Andy致安老師課程預約'),
+    el('p', { class: 'login-hint' }, '請輸入老師提供的邀請碼'),
     input,
     el('button', { class: 'btn-primary', onclick: doLogin }, '登入'),
     el('div', { class: 'login-error', id: 'login-error' }),
@@ -289,7 +289,7 @@ function renderMain() {
 
 function renderHeader() {
   return el('header', { class: 'header' },
-    el('div', { class: 'brand' }, '課程預約'),
+    el('div', { class: 'brand' }, state.isAdmin ? '課程預約' : 'Andy致安老師課程預約'),
     el('div', { class: 'user' },
       state.isAdmin
         ? el('span', { class: 'admin-tag' }, '老師後台')
