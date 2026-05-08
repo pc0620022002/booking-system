@@ -111,6 +111,8 @@ function humanError(code, msg) {
     'missing_code': '缺少邀請碼',
     'missing_datetime': '缺少時段參數',
     'missing_name': '缺少學生姓名',
+    'invalid_code_format': '邀請碼格式不合(僅限英數和 _- 符號,1–30 字)',
+    'code_taken': '此邀請碼已被使用,請換一個',
     'unknown_action': '不支援的動作',
     'admin_key invalid': '老師碼錯誤',
   };
@@ -222,9 +224,11 @@ function renderLogin() {
   const input = el('input', {
     type: 'text',
     placeholder: '邀請碼',
-    maxlength: 8,
+    maxlength: 30,
     id: 'login-code',
     autocomplete: 'off',
+    autocapitalize: 'off',
+    spellcheck: 'false',
   });
   input.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   app.appendChild(el('div', { class: 'login' },
@@ -239,7 +243,7 @@ function renderLogin() {
 
 async function doLogin() {
   const input = $('#login-code');
-  const code = input.value.trim().toUpperCase();
+  const code = input.value.trim(); // 不強制大寫,backend case-insensitive 比對
   const errBox = $('#login-error');
   errBox.textContent = '';
   if (!code) { errBox.textContent = '請輸入邀請碼'; return; }
@@ -607,7 +611,8 @@ async function openStudentManager() {
   const overlay = el('div', { class: 'modal-overlay' });
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
 
-  const nameInput = el('input', { type: 'text', placeholder: '學生姓名', autocomplete: 'off' });
+  const nameInput = el('input', { type: 'text', placeholder: '學生姓名(顯示用)', autocomplete: 'off' });
+  const codeInput = el('input', { type: 'text', placeholder: '邀請碼(留空自動產生)', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
   const emailInput = el('input', { type: 'email', placeholder: 'Email (選填)', autocomplete: 'off' });
   const createBtn = el('button', { class: 'btn-primary inline', onclick: async () => {
     const name = nameInput.value.trim();
@@ -618,10 +623,12 @@ async function openStudentManager() {
         admin_key: state.adminKey,
         name,
         email: emailInput.value.trim(),
+        invite_code: codeInput.value.trim(),
       });
       if (res.ok) {
         toast(`已建立邀請碼:${res.data.invite_code}`);
         nameInput.value = '';
+        codeInput.value = '';
         emailInput.value = '';
         reloadStudentList();
       } else {
@@ -639,7 +646,7 @@ async function openStudentManager() {
   const modal = el('div', { class: 'modal modal-wide' },
     el('h3', {}, '邀請碼管理'),
     el('p', { class: 'modal-hint' }, '建立新邀請碼,點「複製」把碼傳給學生。'),
-    el('div', { class: 'create-form' }, nameInput, emailInput, createBtn),
+    el('div', { class: 'create-form' }, nameInput, codeInput, emailInput, createBtn),
     el('h4', {}, '學生列表'),
     list,
     el('div', { class: 'modal-actions' },
@@ -812,20 +819,20 @@ function jumpToWeek(dateKey) {
 const mockData = {
   adminKey: 'admin',
   students: [
-    { invite_code: 'DEMO1234', name: '示範學生 A', email: 'demo-a@example.com', created_at: new Date().toISOString() },
-    { invite_code: 'TEST5678', name: '示範學生 B', email: '', created_at: new Date().toISOString() },
+    { invite_code: 'Andrew', name: 'Andrew', email: 'andrew@example.com', created_at: new Date().toISOString() },
+    { invite_code: 'Bob', name: 'Bob', email: '', created_at: new Date().toISOString() },
   ],
   slots: {
     '2026-06-01T10:00': { status: 'blocked' },
     '2026-06-01T10:30': { status: 'blocked' },
     '2026-06-01T11:00': { status: 'blocked' },
-    '2026-06-02T14:00': { status: 'booked', invite_code: 'DEMO1234', student_name: '示範學生 A' },
-    '2026-06-02T14:30': { status: 'booked', invite_code: 'DEMO1234', student_name: '示範學生 A' },
-    '2026-06-08T19:00': { status: 'booked', invite_code: 'TEST5678', student_name: '示範學生 B' },
+    '2026-06-02T14:00': { status: 'booked', invite_code: 'Andrew', student_name: 'Andrew' },
+    '2026-06-02T14:30': { status: 'booked', invite_code: 'Andrew', student_name: 'Andrew' },
+    '2026-06-08T19:00': { status: 'booked', invite_code: 'Bob', student_name: 'Bob' },
     '2026-06-15T09:00': { status: 'blocked' },
     '2026-06-15T09:30': { status: 'blocked' },
-    '2026-06-22T20:00': { status: 'booked', invite_code: 'DEMO1234', student_name: '示範學生 A' },
-    '2026-07-04T15:00': { status: 'booked', invite_code: 'TEST5678', student_name: '示範學生 B' },
+    '2026-06-22T20:00': { status: 'booked', invite_code: 'Andrew', student_name: 'Andrew' },
+    '2026-07-04T15:00': { status: 'booked', invite_code: 'Bob', student_name: 'Bob' },
     '2026-07-15T10:00': { status: 'blocked' },
     '2026-08-01T09:00': { status: 'blocked' },
     '2026-08-01T09:30': { status: 'blocked' },
@@ -836,9 +843,9 @@ const mockData = {
 function showMockBanner() {
   const banner = el('div', { class: 'mock-banner' },
     '⚠️ 示範模式 — 資料只存記憶體,重整還原。學生碼:',
-    el('code', {}, 'DEMO1234'),
+    el('code', {}, 'Andrew'),
     ' / ',
-    el('code', {}, 'TEST5678'),
+    el('code', {}, 'Bob'),
     '。老師後台 URL 加 ',
     el('code', {}, '?mock=1&admin=admin'),
   );

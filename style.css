@@ -52,9 +52,6 @@ code {
   border: 1px solid #ddd;
   border-radius: 8px;
   text-align: center;
-  letter-spacing: 4px;
-  text-transform: uppercase;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
 .login input[type="text"]:focus { outline: 2px solid #2196f3; border-color: #2196f3; }
 .login-error {
@@ -335,9 +332,8 @@ body.reschedule-mode .week-table td.slot-available {
 /* === 邀請碼建立表單 === */
 .create-form {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
-  align-items: center;
   padding: 12px;
   background: #f7f7f7;
   border-radius: 8px;
@@ -349,6 +345,11 @@ body.reschedule-mode .week-table td.slot-available {
   font-size: 14px;
 }
 .create-form input:focus { outline: 2px solid #2196f3; border-color: #2196f3; }
+.create-form .btn-primary.inline {
+  grid-column: 1 / -1;
+  justify-self: end;
+  width: auto;
+}
 @media (max-width: 500px) {
   .create-form { grid-template-columns: 1fr; }
 }

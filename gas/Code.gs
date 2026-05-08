@@ -54,7 +54,7 @@ function route(method, e, body) {
       case 'unblock':        return setBlocked(body.admin_key, body.datetime, false);
       case 'unbook':         return unbook(body.admin_key, body.datetime);
       case 'reschedule':     return reschedule(body.admin_key, body.from_dt, body.to_dt);
-      case 'create_student': return createStudent(body.admin_key, body.name, body.email);
+      case 'create_student': return createStudent(body.admin_key, body.name, body.email, body.invite_code);
       default:               return errResp('unknown_action', action);
     }
   } catch (err) {
@@ -118,9 +118,10 @@ function findStudent(code) {
   if (!sheet) return null;
   const last = sheet.getLastRow();
   if (last < 2) return null;
+  const target = String(code).trim().toLowerCase();
   const rows = sheet.getRange(2, 1, last - 1, STUDENT_HEADERS.length).getValues();
   for (const r of rows) {
-    if (String(r[0]).trim() === String(code).trim()) {
+    if (String(r[0]).trim().toLowerCase() === target) {
       return { invite_code: r[0], name: r[1], email: r[2] };
     }
   }
@@ -157,7 +158,7 @@ function getCalendar(code) {
 
     let view;
     if (status === 'available') view = 'available';
-    else if (status === 'booked' && String(inviteCode).trim() === String(code).trim()) view = 'mine';
+    else if (status === 'booked' && String(inviteCode).trim().toLowerCase() === String(code).trim().toLowerCase()) view = 'mine';
     else view = 'unavailable'; // blocked OR booked_by_others(學生眼中合併)
 
     if (!days[dateKey]) days[dateKey] = [];
@@ -185,7 +186,7 @@ function book(code, datetime) {
 
     sheet.getRange(slot.rowIndex, 2, 1, 4).setValues([[
       'booked',
-      code,
+      student.invite_code, // 用 sheet 裡的原始大小寫,不用 user 輸入
       student.name,
       new Date(),
     ]]);
@@ -289,18 +290,51 @@ function reschedule(key, fromDt, toDt) {
   }
 }
 
-function createStudent(key, name, email) {
+function createStudent(key, name, email, customCode) {
   requireAdmin(key);
   if (!name || !String(name).trim()) return errResp('missing_name');
 
   const sheet = getSS().getSheetByName(STUDENTS_SHEET);
   if (!sheet) throw new Error(`${STUDENTS_SHEET} sheet 不存在,請先執行 initializeSheets()`);
 
-  let code = generateInviteCode();
-  for (let i = 0; i < 5 && findStudent(code); i++) code = generateInviteCode();
+  let code;
+  if (customCode && String(customCode).trim()) {
+    code = String(customCode).trim();
+    // 限英文 / 數字 / _- 符號,1-30 字
+    if (!/^[A-Za-z0-9_-]{1,30}$/.test(code)) {
+      return errResp('invalid_code_format', '邀請碼僅限英數和 _- 符號,1-30 字');
+    }
+    if (findStudent(code)) {
+      return errResp('code_taken', '此邀請碼已被使用');
+    }
+  } else {
+    code = generateInviteCode();
+    for (let i = 0; i < 5 && findStudent(code); i++) code = generateInviteCode();
+  }
 
   sheet.appendRow([code, String(name).trim(), email ? String(email).trim() : '', new Date(), '']);
   return okResp({ invite_code: code, name: String(name).trim(), email: email || '' });
+}
+
+// 批次匯入學生(在 GAS 編輯器手動執行)
+// 用法:_devBulkAddStudents([{invite_code:'Andrew', name:'陳小明'}, {invite_code:'Bob', name:'王大華'}])
+// 或 _devBulkAddStudents([{invite_code:'Andrew'}, {invite_code:'Bob'}])(name 留空時取 invite_code)
+function _devBulkAddStudents(arr) {
+  const sheet = getSS().getSheetByName(STUDENTS_SHEET);
+  if (!sheet) throw new Error(`${STUDENTS_SHEET} sheet 不存在`);
+  const added = [];
+  const skipped = [];
+  arr.forEach(s => {
+    const code = String(s.invite_code || '').trim();
+    if (!code) { skipped.push({ s, reason: 'empty' }); return; }
+    if (!/^[A-Za-z0-9_-]{1,30}$/.test(code)) { skipped.push({ s, reason: 'invalid_format' }); return; }
+    if (findStudent(code)) { skipped.push({ s, reason: 'duplicate' }); return; }
+    sheet.appendRow([code, String(s.name || code).trim(), String(s.email || '').trim(), new Date(), '']);
+    added.push(code);
+  });
+  Logger.log(`added: ${added.length} (${added.join(', ')}) | skipped: ${skipped.length}`);
+  if (skipped.length) Logger.log('skipped detail: ' + JSON.stringify(skipped));
+  return { added, skipped };
 }
 
 function listStudents(key) {
