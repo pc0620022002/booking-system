@@ -113,6 +113,7 @@ function humanError(code, msg) {
     'missing_name': '缺少學生姓名',
     'invalid_code_format': '邀請碼格式不合(僅限英數和 _- 符號,1–30 字)',
     'code_taken': '此邀請碼已被使用,請換一個',
+    'student_not_found': '找不到此邀請碼對應的學生',
     'unknown_action': '不支援的動作',
     'admin_key invalid': '老師碼錯誤',
   };
@@ -611,8 +612,8 @@ async function openStudentManager() {
   const overlay = el('div', { class: 'modal-overlay' });
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
 
-  const nameInput = el('input', { type: 'text', placeholder: '學生姓名(顯示用)', autocomplete: 'off' });
-  const codeInput = el('input', { type: 'text', placeholder: '邀請碼(留空自動產生)', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+  const nameInput = el('input', { type: 'text', placeholder: '學生姓名(預設也當邀請碼)', autocomplete: 'off' });
+  const codeInput = el('input', { type: 'text', placeholder: '自訂邀請碼(留空 = 用姓名)', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
   const emailInput = el('input', { type: 'email', placeholder: 'Email (選填)', autocomplete: 'off' });
   const createBtn = el('button', { class: 'btn-primary inline', onclick: async () => {
     const name = nameInput.value.trim();
@@ -645,7 +646,7 @@ async function openStudentManager() {
 
   const modal = el('div', { class: 'modal modal-wide' },
     el('h3', {}, '邀請碼管理'),
-    el('p', { class: 'modal-hint' }, '建立新邀請碼,點「複製」把碼傳給學生。'),
+    el('p', { class: 'modal-hint' }, '邀請碼預設 = 姓名(若姓名是中文或特殊字,會自動產生 8 字隨機碼)。建立後點「複製」把碼傳給學生。'),
     el('div', { class: 'create-form' }, nameInput, codeInput, emailInput, createBtn),
     el('h4', {}, '學生列表'),
     list,
@@ -684,12 +685,28 @@ async function reloadStudentList() {
         el('div', { class: 'student-code' },
           el('code', {}, s.invite_code),
           el('button', { class: 'btn-link', onclick: () => copyCode(s.invite_code) }, '複製'),
+          el('button', { class: 'btn-link student-del', onclick: () => deleteStudentClick(s.invite_code, s.name) }, '刪除'),
         ),
       ));
     });
   } catch (err) {
     list.innerHTML = '';
     list.appendChild(el('div', { class: 'error-msg' }, '連線失敗:' + err.message));
+  }
+}
+
+async function deleteStudentClick(code, name) {
+  if (!confirm(`確定刪除「${name}」(${code}) 的邀請碼嗎?\n\n注意:已有的預約會留在月曆上(顯示原名)。如要清掉請手動取消那些預約。`)) return;
+  try {
+    const res = await api.post('delete_student', { admin_key: state.adminKey, invite_code: code });
+    if (res.ok) {
+      toast(`已刪除:${res.data.name || code}`);
+      reloadStudentList();
+    } else {
+      toast('失敗:' + humanError(res.error, res.msg), 'error');
+    }
+  } catch (err) {
+    toast('連線失敗:' + err.message, 'error');
   }
 }
 
@@ -870,7 +887,8 @@ function mockHandle(action, params, body) {
     case 'unblock':        return mockSetBlocked(body.admin_key, body.datetime, false);
     case 'unbook':         return mockUnbook(body.admin_key, body.datetime);
     case 'reschedule':     return mockReschedule(body.admin_key, body.from_dt, body.to_dt);
-    case 'create_student': return mockCreateStudent(body.admin_key, body.name, body.email);
+    case 'create_student': return mockCreateStudent(body.admin_key, body.name, body.email, body.invite_code);
+    case 'delete_student': return mockDeleteStudent(body.admin_key, body.invite_code);
     default:               return { ok: false, error: 'unknown_action' };
   }
 }
@@ -970,19 +988,45 @@ function mockReschedule(adminKey, fromDt, toDt) {
   return { ok: true, data: { from: fromDt, to: toDt } };
 }
 
-function mockCreateStudent(adminKey, name, email) {
+function mockCreateStudent(adminKey, name, email, customCode) {
   if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
   if (!name || !name.trim()) return { ok: false, error: 'missing_name' };
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 8; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+  const trimmedName = name.trim();
+  const codeFormat = /^[A-Za-z0-9_-]{1,30}$/;
+  const codeExists = c => mockData.students.some(s => s.invite_code.toLowerCase() === c.toLowerCase());
+
+  let code;
+  if (customCode && customCode.trim()) {
+    code = customCode.trim();
+    if (!codeFormat.test(code)) return { ok: false, error: 'invalid_code_format' };
+    if (codeExists(code)) return { ok: false, error: 'code_taken' };
+  } else if (codeFormat.test(trimmedName) && !codeExists(trimmedName)) {
+    code = trimmedName;
+  } else {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    do {
+      code = '';
+      for (let i = 0; i < 8; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+    } while (codeExists(code));
+  }
+
   mockData.students.push({
     invite_code: code,
-    name: name.trim(),
+    name: trimmedName,
     email: (email || '').trim(),
     created_at: new Date().toISOString(),
   });
-  return { ok: true, data: { invite_code: code, name: name.trim(), email: email || '' } };
+  return { ok: true, data: { invite_code: code, name: trimmedName, email: email || '' } };
+}
+
+function mockDeleteStudent(adminKey, code) {
+  if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
+  if (!code) return { ok: false, error: 'missing_code' };
+  const target = String(code).trim().toLowerCase();
+  const idx = mockData.students.findIndex(s => s.invite_code.toLowerCase() === target);
+  if (idx < 0) return { ok: false, error: 'student_not_found' };
+  const removed = mockData.students.splice(idx, 1)[0];
+  return { ok: true, data: { deleted: removed.invite_code, name: removed.name } };
 }
 
 function mockListStudents(adminKey) {

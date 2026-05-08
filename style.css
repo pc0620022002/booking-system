@@ -381,6 +381,12 @@ body.reschedule-mode .week-table td.slot-available {
   letter-spacing: 1px;
   font-weight: 600;
 }
+.student-del { color: #d32f2f; }
+.student-del:hover {
+  text-decoration: underline;
+  background: rgba(211, 47, 47, 0.08);
+  border-radius: 4px;
+}
 
 /* === 預約總覽 === */
 .summary-list {
