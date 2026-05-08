@@ -455,3 +455,20 @@ body.reschedule-mode .slot-available {
   text-decoration: none;
 }
 body.reschedule-mode #app { padding-top: 56px; }
+
+/* === Mock 模式 banner === */
+.mock-banner {
+  background: #ff9800;
+  color: #fff;
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.mock-banner code {
+  background: rgba(255,255,255,0.25);
+  color: #fff;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 13px;
+}

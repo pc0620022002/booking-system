@@ -119,12 +119,17 @@ function humanError(code, msg) {
 // Init
 // =========================================================================
 async function init() {
-  if (!API_BASE) {
+  const params = new URLSearchParams(location.search);
+  const isMock = params.get('mock') === '1';
+
+  if (isMock) {
+    installMockApi();
+    showMockBanner();
+  } else if (!API_BASE) {
     renderSetupPage();
     return;
   }
 
-  const params = new URLSearchParams(location.search);
   const adminKey = params.get('admin');
 
   if (adminKey) {
@@ -671,6 +676,184 @@ function copyCode(code) {
   } else {
     toast('瀏覽器不支援自動複製,請手動選取', 'error');
   }
+}
+
+// =========================================================================
+// Mock 模式 — `?mock=1` 啟用,資料只存記憶體,重整還原
+// =========================================================================
+const mockData = {
+  adminKey: 'admin',
+  students: [
+    { invite_code: 'DEMO1234', name: '示範學生 A', email: 'demo-a@example.com', created_at: new Date().toISOString() },
+    { invite_code: 'TEST5678', name: '示範學生 B', email: '', created_at: new Date().toISOString() },
+  ],
+  // sparse:只記非 available 的時段;讀的時候 fallback default 'available'
+  slots: {
+    '2026-06-01T10:00': { status: 'blocked' },
+    '2026-06-01T10:30': { status: 'blocked' },
+    '2026-06-01T11:00': { status: 'blocked' },
+    '2026-06-02T14:00': { status: 'booked', invite_code: 'DEMO1234', student_name: '示範學生 A' },
+    '2026-06-02T14:30': { status: 'booked', invite_code: 'DEMO1234', student_name: '示範學生 A' },
+    '2026-06-08T19:00': { status: 'booked', invite_code: 'TEST5678', student_name: '示範學生 B' },
+    '2026-06-15T09:00': { status: 'blocked' },
+    '2026-06-15T09:30': { status: 'blocked' },
+    '2026-06-22T20:00': { status: 'booked', invite_code: 'DEMO1234', student_name: '示範學生 A' },
+    '2026-07-04T15:00': { status: 'booked', invite_code: 'TEST5678', student_name: '示範學生 B' },
+    '2026-07-15T10:00': { status: 'blocked' },
+    '2026-08-01T09:00': { status: 'blocked' },
+    '2026-08-01T09:30': { status: 'blocked' },
+    '2026-08-01T10:00': { status: 'blocked' },
+  },
+};
+
+function showMockBanner() {
+  const banner = el('div', { class: 'mock-banner' },
+    '⚠️ 示範模式 — 資料只存記憶體,重整還原。學生碼:',
+    el('code', {}, 'DEMO1234'),
+    ' / ',
+    el('code', {}, 'TEST5678'),
+    '。老師後台 URL 加 ',
+    el('code', {}, '?mock=1&admin=admin'),
+  );
+  document.body.insertBefore(banner, document.body.firstChild);
+}
+
+function installMockApi() {
+  api.get = async (action, params = {}) => { await mockSleep(); return mockHandle(action, params, null); };
+  api.post = async (action, body = {}) => { await mockSleep(); return mockHandle(action, null, body); };
+}
+
+const mockSleep = () => new Promise(r => setTimeout(r, 120));
+
+function mockHandle(action, params, body) {
+  switch (action) {
+    case 'ping':           return { ok: true, data: { pong: true, mock: true } };
+    case 'get_calendar':   return mockGetCalendar(params.code);
+    case 'admin_calendar': return mockAdminCalendar(params.admin_key);
+    case 'list_students':  return mockListStudents(params.admin_key);
+    case 'book':           return mockBook(body.code, body.datetime);
+    case 'block':          return mockSetBlocked(body.admin_key, body.datetime, true);
+    case 'unblock':        return mockSetBlocked(body.admin_key, body.datetime, false);
+    case 'unbook':         return mockUnbook(body.admin_key, body.datetime);
+    case 'reschedule':     return mockReschedule(body.admin_key, body.from_dt, body.to_dt);
+    case 'create_student': return mockCreateStudent(body.admin_key, body.name, body.email);
+    default:               return { ok: false, error: 'unknown_action' };
+  }
+}
+
+function mockEnumerateAllSlots() {
+  const out = [];
+  const months = [
+    { year: 2026, month: 6, days: 30 },
+    { year: 2026, month: 7, days: 31 },
+    { year: 2026, month: 8, days: 31 },
+  ];
+  months.forEach(({ year, month, days }) => {
+    for (let d = 1; d <= days; d++) {
+      const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      for (let h = 9; h < 22; h++) {
+        for (let m = 0; m < 60; m += 30) {
+          const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+          out.push({ dateKey, time, datetime: `${dateKey}T${time}` });
+        }
+      }
+    }
+  });
+  return out;
+}
+
+function mockGetCalendar(code) {
+  const student = mockData.students.find(s => s.invite_code === code);
+  if (!student) return { ok: false, error: 'invalid_code' };
+  const days = {};
+  mockEnumerateAllSlots().forEach(({ dateKey, time, datetime }) => {
+    const slot = mockData.slots[datetime] || { status: 'available' };
+    let view;
+    if (slot.status === 'available') view = 'available';
+    else if (slot.status === 'booked' && slot.invite_code === code) view = 'mine';
+    else view = 'unavailable';
+    if (!days[dateKey]) days[dateKey] = [];
+    days[dateKey].push({ time, status: view });
+  });
+  return { ok: true, data: { days, student: { name: student.name, code } } };
+}
+
+function mockAdminCalendar(adminKey) {
+  if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
+  const days = {};
+  mockEnumerateAllSlots().forEach(({ dateKey, time, datetime }) => {
+    const slot = mockData.slots[datetime] || { status: 'available' };
+    if (!days[dateKey]) days[dateKey] = [];
+    days[dateKey].push({
+      time,
+      status: slot.status,
+      invite_code: slot.invite_code || '',
+      student_name: slot.student_name || '',
+    });
+  });
+  return { ok: true, data: { days } };
+}
+
+function mockBook(code, datetime) {
+  const student = mockData.students.find(s => s.invite_code === code);
+  if (!student) return { ok: false, error: 'invalid_code' };
+  const slot = mockData.slots[datetime];
+  if (slot && slot.status !== 'available') return { ok: false, error: 'slot_taken' };
+  mockData.slots[datetime] = { status: 'booked', invite_code: code, student_name: student.name };
+  return { ok: true, data: { datetime, status: 'mine', student_name: student.name } };
+}
+
+function mockSetBlocked(adminKey, datetime, makeBlocked) {
+  if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
+  if (makeBlocked) {
+    const slot = mockData.slots[datetime];
+    if (slot && slot.status === 'booked') return { ok: false, error: 'slot_booked_cannot_block' };
+    mockData.slots[datetime] = { status: 'blocked' };
+    return { ok: true, data: { datetime, status: 'blocked' } };
+  }
+  const slot = mockData.slots[datetime];
+  if (!slot || slot.status !== 'blocked') return { ok: false, error: 'slot_not_blocked' };
+  delete mockData.slots[datetime];
+  return { ok: true, data: { datetime, status: 'available' } };
+}
+
+function mockUnbook(adminKey, datetime) {
+  if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
+  const slot = mockData.slots[datetime];
+  if (!slot || slot.status !== 'booked') return { ok: false, error: 'slot_not_booked' };
+  delete mockData.slots[datetime];
+  return { ok: true, data: { datetime, status: 'available' } };
+}
+
+function mockReschedule(adminKey, fromDt, toDt) {
+  if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
+  const fromSlot = mockData.slots[fromDt];
+  if (!fromSlot || fromSlot.status !== 'booked') return { ok: false, error: 'from_not_booked' };
+  const toSlot = mockData.slots[toDt];
+  if (toSlot && toSlot.status !== 'available') return { ok: false, error: 'to_not_available' };
+  mockData.slots[toDt] = { status: 'booked', invite_code: fromSlot.invite_code, student_name: fromSlot.student_name };
+  delete mockData.slots[fromDt];
+  return { ok: true, data: { from: fromDt, to: toDt } };
+}
+
+function mockCreateStudent(adminKey, name, email) {
+  if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
+  if (!name || !name.trim()) return { ok: false, error: 'missing_name' };
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 8; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+  mockData.students.push({
+    invite_code: code,
+    name: name.trim(),
+    email: (email || '').trim(),
+    created_at: new Date().toISOString(),
+  });
+  return { ok: true, data: { invite_code: code, name: name.trim(), email: email || '' } };
+}
+
+function mockListStudents(adminKey) {
+  if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
+  return { ok: true, data: { students: mockData.students.slice() } };
 }
 
 // =========================================================================
