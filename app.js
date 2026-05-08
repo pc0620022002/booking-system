@@ -2,13 +2,21 @@
 // 流程:
 //   1. 判斷 ?admin=xxx → 老師模式 / 否則 → 學生模式
 //   2. 學生先試用 localStorage 邀請碼,失敗才顯示登入框
-//   3. 載入月曆 → 渲染 3 個月並排月曆 + 抽屜
+//   3. 載入月曆 → 一次顯示一週(直欄=時間、橫欄=日期),按鈕或左右滑動切週
 //   4. 點時段 → 學生:預約 / 老師:block toggle 或開選單(取消、改期)
+//   5. 「預約總覽」:老師看全體學生 / 學生看自己
 
 // =========================================================================
-// 設定 — 部署後請把 GAS Web App URL 填進來
+// 設定
 // =========================================================================
 const API_BASE = '';
+
+const RANGE_START = '2026-06-01';
+const RANGE_END = '2026-08-31';
+const HOURS_START = 9;
+const HOURS_END = 22; // 不含,最後一格 21:30
+const SLOT_MINUTES = 30;
+const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
 
 // =========================================================================
 // State
@@ -19,10 +27,10 @@ const state = {
   inviteCode: '',
   studentName: '',
   calendar: null,
-  selectedDate: null,
+  weeks: null,        // [{ days: [{dateKey, inRange, weekday, dayNum, month}, ...] }, ...]
+  selectedWeek: null,
 };
 
-// 改期模式:點老師後台中已預約時段 → 改期 → 設這個值 → 下一次點 available 時段就觸發改期 API
 let rescheduleFromDt = null;
 
 // =========================================================================
@@ -36,8 +44,6 @@ const storage = {
 
 // =========================================================================
 // API client
-//   POST 不能設 Content-Type: application/json (會觸發 CORS preflight,GAS 不支援)
-//   用預設 text/plain,GAS 端從 e.postData.contents 解 JSON
 // =========================================================================
 const api = {
   async get(action, params = {}) {
@@ -107,7 +113,6 @@ function humanError(code, msg) {
     'missing_name': '缺少學生姓名',
     'unknown_action': '不支援的動作',
     'admin_key invalid': '老師碼錯誤',
-    'admin_key invalid (admin_key invalid)': '老師碼錯誤',
   };
   if (map[code]) return map[code];
   if (msg && msg.includes('admin_key invalid')) return '老師碼錯誤';
@@ -131,7 +136,6 @@ async function init() {
   }
 
   const adminKey = params.get('admin');
-
   if (adminKey) {
     state.isAdmin = true;
     state.adminKey = adminKey;
@@ -183,7 +187,6 @@ async function refreshCalendar() {
   if (state.isAdmin) await loadAdminCalendar();
   else await tryLoginStudent(state.inviteCode);
   renderMain();
-  // 如果 reschedule banner 在,重新加上
   if (rescheduleFromDt) showRescheduleBanner();
 }
 
@@ -198,11 +201,15 @@ function renderSetupPage() {
     el('p', { class: 'login-hint' },
       '本前端尚未連接後端 API。'),
     el('p', { class: 'login-hint' },
-      '請依 DEPLOY.md 部署 GAS Web App,把 URL 填進 ',
+      '想先看 UI?在網址末加 ',
+      el('code', {}, '?mock=1'),
+      ' 進入示範模式。'),
+    el('p', { class: 'login-hint' },
+      '正式部署請依 DEPLOY.md,把 GAS Web App URL 填進 ',
       el('code', {}, 'app.js'),
       ' 的 ',
       el('code', {}, 'API_BASE'),
-      ' 後再訪問。'),
+      '。'),
   ));
 }
 
@@ -263,9 +270,16 @@ function doLogout() {
 function renderMain() {
   const app = $('#app');
   app.innerHTML = '';
+  if (!state.weeks) state.weeks = computeWeeks(RANGE_START, RANGE_END);
+  if (state.selectedWeek == null) state.selectedWeek = defaultWeekIndex();
+
   app.appendChild(renderHeader());
-  app.appendChild(renderMonths());
-  app.appendChild(renderDrawer());
+  app.appendChild(renderWeekNav());
+
+  const wrap = el('div', { class: 'week-wrap', id: 'week-wrap' });
+  wrap.appendChild(renderWeekTable(state.selectedWeek));
+  app.appendChild(wrap);
+  attachSwipe(wrap);
 }
 
 function renderHeader() {
@@ -275,6 +289,7 @@ function renderHeader() {
       state.isAdmin
         ? el('span', { class: 'admin-tag' }, '老師後台')
         : el('span', { class: 'user-name' }, state.studentName),
+      el('button', { class: 'btn-link', onclick: openSummary }, state.isAdmin ? '預約總覽' : '我的預約'),
       state.isAdmin
         ? el('button', { class: 'btn-link', onclick: openStudentManager }, '管理邀請碼')
         : null,
@@ -283,107 +298,41 @@ function renderHeader() {
   );
 }
 
-const MONTHS = ['2026-06', '2026-07', '2026-08'];
-const MONTH_LABELS = { '2026-06': '2026 年 6 月', '2026-07': '2026 年 7 月', '2026-08': '2026 年 8 月' };
-const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
-
-function renderMonths() {
-  const wrap = el('main', { class: 'months' });
-  MONTHS.forEach(m => wrap.appendChild(renderMonth(m)));
-  return wrap;
-}
-
-function renderMonth(monthKey) {
-  const [year, month] = monthKey.split('-').map(Number);
-  const firstDay = new Date(year, month - 1, 1);
-  const startWeekday = firstDay.getDay();
-  const daysInMonth = new Date(year, month, 0).getDate();
-
-  const monthEl = el('section', { class: 'month' },
-    el('h2', { class: 'month-title' }, MONTH_LABELS[monthKey]),
-    el('div', { class: 'weekdays' }, ...WEEKDAYS.map(w => el('div', { class: 'weekday' }, w))),
-  );
-
-  const grid = el('div', { class: 'days-grid' });
-  for (let i = 0; i < startWeekday; i++) grid.appendChild(el('div', { class: 'day-empty' }));
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    grid.appendChild(renderDayCell(dateKey, d));
-  }
-  monthEl.appendChild(grid);
-  return monthEl;
-}
-
-function renderDayCell(dateKey, dayNum) {
-  const slots = (state.calendar && state.calendar[dateKey]) || [];
-  let avail = 0, blocked = 0, booked = 0, mine = 0;
-  slots.forEach(s => {
-    if (state.isAdmin) {
-      if (s.status === 'available') avail++;
-      else if (s.status === 'blocked') blocked++;
-      else if (s.status === 'booked') booked++;
-    } else {
-      if (s.status === 'available') avail++;
-      else if (s.status === 'mine') mine++;
-    }
-  });
-
-  const cell = el('button', {
-    class: 'day-cell',
-    onclick: () => openDrawer(dateKey),
-    dataset: { date: dateKey },
-  });
-  cell.appendChild(el('div', { class: 'day-num' }, String(dayNum)));
-
-  const stats = el('div', { class: 'day-stats' });
-  if (state.isAdmin) {
-    if (avail) stats.appendChild(el('span', { class: 'stat avail', title: '可選' }, String(avail)));
-    if (blocked) stats.appendChild(el('span', { class: 'stat blocked', title: '我封鎖' }, String(blocked)));
-    if (booked) stats.appendChild(el('span', { class: 'stat booked', title: '已預約' }, String(booked)));
-  } else {
-    if (mine) stats.appendChild(el('span', { class: 'stat mine' }, `${mine} 已約`));
-    if (avail) stats.appendChild(el('span', { class: 'stat avail' }, `${avail} 可選`));
-    if (!mine && !avail) {
-      stats.appendChild(el('span', { class: 'stat full' }, '已滿'));
-      cell.classList.add('day-full');
-    }
-  }
-  cell.appendChild(stats);
-  return cell;
-}
-
 // =========================================================================
-// Render — Drawer (該日時段)
+// 週計算
 // =========================================================================
-function renderDrawer() {
-  return el('div', { class: 'drawer hidden', id: 'drawer', onclick: drawerOverlayClick },
-    el('div', { class: 'drawer-content', onclick: e => e.stopPropagation() },
-      el('header', { class: 'drawer-header' },
-        el('h2', { id: 'drawer-title' }, ''),
-        el('button', { class: 'btn-close', onclick: closeDrawer, 'aria-label': '關閉' }, '✕'),
-      ),
-      el('div', { id: 'drawer-body', class: 'drawer-body' }),
-    ),
-  );
+function computeWeeks(rangeStart, rangeEnd) {
+  const start = new Date(rangeStart + 'T12:00:00+08:00');
+  const startWeekday = start.getDay();
+  const firstSundayMs = start.getTime() - startWeekday * 86400000;
+  const end = new Date(rangeEnd + 'T12:00:00+08:00');
+  const endWeekday = end.getDay();
+  const lastSaturdayMs = end.getTime() + (6 - endWeekday) * 86400000;
+
+  const weeks = [];
+  for (let cursor = firstSundayMs; cursor <= lastSaturdayMs; cursor += 7 * 86400000) {
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(cursor + i * 86400000);
+      const dateKey = formatDateKey(d);
+      const inRange = dateKey >= rangeStart && dateKey <= rangeEnd;
+      days.push({ dateKey, inRange, weekday: d.getDay(), dayNum: d.getDate(), month: d.getMonth() + 1 });
+    }
+    weeks.push({ days });
+  }
+  return weeks;
 }
 
-function drawerOverlayClick(e) {
-  if (e.target.id === 'drawer') closeDrawer();
+function formatDateKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function openDrawer(dateKey) {
-  state.selectedDate = dateKey;
-  const titleEl = $('#drawer-title');
-  if (titleEl) titleEl.textContent = formatDateLabel(dateKey);
-  renderSlotGrid();
-  const drawer = $('#drawer');
-  if (drawer) drawer.classList.remove('hidden');
-}
-
-function closeDrawer() {
-  state.selectedDate = null;
-  const drawer = $('#drawer');
-  if (drawer) drawer.classList.add('hidden');
+function defaultWeekIndex() {
+  const today = formatDateKey(new Date());
+  for (let i = 0; i < state.weeks.length; i++) {
+    if (state.weeks[i].days.some(d => d.dateKey === today)) return i;
+  }
+  return 0;
 }
 
 function formatDateLabel(dateKey) {
@@ -392,115 +341,195 @@ function formatDateLabel(dateKey) {
   return `${y} 年 ${m} 月 ${d} 日(週${wk})`;
 }
 
-function renderSlotGrid() {
-  const body = $('#drawer-body');
-  body.innerHTML = '';
-  const slots = (state.calendar && state.calendar[state.selectedDate]) || [];
-  if (!slots.length) {
-    body.appendChild(el('div', { class: 'empty-msg' }, '此日無時段資料'));
-    return;
+// =========================================================================
+// 週導覽
+// =========================================================================
+function renderWeekNav() {
+  const week = state.weeks[state.selectedWeek];
+  const first = week.days[0];
+  const last = week.days[6];
+  const label = `${first.month}/${first.dayNum} – ${last.month}/${last.dayNum} (第 ${state.selectedWeek + 1} / ${state.weeks.length} 週)`;
+
+  const prev = el('button', { class: 'btn-secondary nav-btn', onclick: gotoPrevWeek }, '← 上週');
+  if (state.selectedWeek === 0) prev.disabled = true;
+  const next = el('button', { class: 'btn-secondary nav-btn', onclick: gotoNextWeek }, '下週 →');
+  if (state.selectedWeek === state.weeks.length - 1) next.disabled = true;
+
+  return el('div', { class: 'week-nav' },
+    prev,
+    el('span', { class: 'week-label' }, label),
+    next,
+  );
+}
+
+function gotoPrevWeek() {
+  if (state.selectedWeek > 0) {
+    state.selectedWeek--;
+    renderMain();
   }
-  const grid = el('div', { class: 'slot-grid' });
-  slots.forEach(s => grid.appendChild(renderSlotButton(s)));
-  body.appendChild(grid);
 }
-
-function renderSlotButton(slot) {
-  const datetime = `${state.selectedDate}T${slot.time}`;
-  if (state.isAdmin) return renderAdminSlot(slot, datetime);
-  return renderStudentSlot(slot, datetime);
-}
-
-function renderStudentSlot(slot, datetime) {
-  const btn = el('button', { class: `slot slot-${slot.status}`, dataset: { datetime } });
-  btn.appendChild(el('span', { class: 'slot-time' }, slot.time));
-  if (slot.status === 'mine') btn.appendChild(el('span', { class: 'slot-meta' }, '已預約'));
-  if (slot.status === 'available') {
-    btn.addEventListener('click', () => onStudentBook(datetime, slot.time));
-  } else {
-    btn.disabled = true;
+function gotoNextWeek() {
+  if (state.selectedWeek < state.weeks.length - 1) {
+    state.selectedWeek++;
+    renderMain();
   }
-  return btn;
-}
-
-function renderAdminSlot(slot, datetime) {
-  const btn = el('button', { class: `slot slot-${slot.status}`, dataset: { datetime } });
-  btn.appendChild(el('span', { class: 'slot-time' }, slot.time));
-  if (slot.status === 'blocked') btn.appendChild(el('span', { class: 'slot-meta' }, '⛔ 已封鎖'));
-  else if (slot.status === 'booked') btn.appendChild(el('span', { class: 'slot-meta' }, slot.student_name || '學生'));
-  btn.addEventListener('click', () => onAdminSlotClick(slot, datetime));
-  return btn;
 }
 
 // =========================================================================
-// 學生功能 — 預約
+// Swipe (touch)
+// =========================================================================
+let swipeStart = null;
+let swipeMoved = false;
+
+function attachSwipe(elem) {
+  elem.addEventListener('touchstart', e => {
+    swipeStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    swipeMoved = false;
+  }, { passive: true });
+  elem.addEventListener('touchmove', e => {
+    if (!swipeStart) return;
+    const dx = e.touches[0].clientX - swipeStart.x;
+    const dy = e.touches[0].clientY - swipeStart.y;
+    if (Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+      swipeMoved = true;
+    }
+  }, { passive: true });
+  elem.addEventListener('touchend', e => {
+    if (!swipeStart) { swipeMoved = false; return; }
+    const dx = e.changedTouches[0].clientX - swipeStart.x;
+    swipeStart = null;
+    if (swipeMoved && Math.abs(dx) > 60) {
+      if (dx < 0) gotoNextWeek();
+      else gotoPrevWeek();
+    }
+    setTimeout(() => { swipeMoved = false; }, 50);
+  });
+}
+
+// =========================================================================
+// 週表格
+// =========================================================================
+function renderWeekTable(weekIndex) {
+  const week = state.weeks[weekIndex];
+  const table = el('table', { class: 'week-table' });
+
+  const thead = el('thead');
+  const headerRow = el('tr');
+  headerRow.appendChild(el('th', { class: 'time-col' }, ''));
+  week.days.forEach(d => {
+    headerRow.appendChild(el('th', { class: d.inRange ? 'date-col' : 'date-col date-col-out' },
+      el('div', { class: 'wk' }, '週' + WEEKDAYS[d.weekday]),
+      el('div', { class: 'date' }, `${d.month}/${d.dayNum}`),
+    ));
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = el('tbody');
+  for (let h = HOURS_START; h < HOURS_END; h++) {
+    for (let m = 0; m < 60; m += SLOT_MINUTES) {
+      const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      const row = el('tr');
+      row.appendChild(el('th', { class: 'time-col' }, time));
+      week.days.forEach(d => {
+        if (!d.inRange) {
+          row.appendChild(el('td', { class: 'slot slot-out-of-range' }));
+          return;
+        }
+        const slotsForDay = (state.calendar && state.calendar[d.dateKey]) || [];
+        const slot = slotsForDay.find(s => s.time === time);
+        if (!slot) {
+          row.appendChild(el('td', { class: 'slot slot-out-of-range' }));
+          return;
+        }
+        row.appendChild(renderTableCell(slot, d.dateKey, time));
+      });
+      tbody.appendChild(row);
+    }
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+function renderTableCell(slot, dateKey, time) {
+  const datetime = `${dateKey}T${time}`;
+  const td = el('td', { class: `slot slot-${slot.status}`, dataset: { datetime } });
+
+  if (state.isAdmin) {
+    if (slot.status === 'booked') {
+      td.appendChild(el('span', { class: 'cell-name' }, shortName(slot.student_name)));
+    } else if (slot.status === 'blocked') {
+      td.appendChild(el('span', { class: 'cell-icon' }, '⛔'));
+    }
+    td.addEventListener('click', () => onAdminSlotClick(slot, datetime));
+  } else {
+    if (slot.status === 'mine') {
+      td.appendChild(el('span', { class: 'cell-mine' }, '已約'));
+    }
+    if (slot.status === 'available') {
+      td.addEventListener('click', () => onStudentBook(datetime, time));
+    }
+  }
+  return td;
+}
+
+function shortName(name) {
+  if (!name) return '?';
+  const trimmed = String(name).trim();
+  return trimmed.length > 3 ? trimmed.slice(0, 3) : trimmed;
+}
+
+// =========================================================================
+// 學生 — 預約
 // =========================================================================
 async function onStudentBook(datetime, time) {
-  const dateLabel = formatDateLabel(state.selectedDate);
+  if (swipeMoved) return;
+  const dateKey = datetime.split('T')[0];
+  const dateLabel = formatDateLabel(dateKey);
   if (!confirm(`確定預約 ${dateLabel} ${time} 嗎?\n\n預約後無法自行取消,需聯絡老師。`)) return;
   try {
     const res = await api.post('book', { code: state.inviteCode, datetime });
-    if (res.ok) {
-      toast('預約成功');
-    } else {
-      toast('預約失敗:' + humanError(res.error, res.msg), 'error');
-    }
+    if (res.ok) toast('預約成功');
+    else toast('預約失敗:' + humanError(res.error, res.msg), 'error');
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
   }
-  // 不論結果都刷新(失敗可能因為時段已被搶走,要更新顯示)
   await refreshCalendar();
-  if (state.selectedDate) openDrawer(state.selectedDate);
 }
 
 // =========================================================================
-// 老師功能 — slot 點擊路由
+// 老師 — slot 點擊路由
 // =========================================================================
 async function onAdminSlotClick(slot, datetime) {
-  // 改期模式:第二次點 → 選擇目標
+  if (swipeMoved) return;
+
   if (rescheduleFromDt) {
-    if (rescheduleFromDt === datetime) {
-      cancelReschedule();
-      return;
-    }
-    if (slot.status !== 'available') {
-      toast('改期目標必須是可選(白色)時段', 'error');
-      return;
-    }
+    if (rescheduleFromDt === datetime) { cancelReschedule(); return; }
+    if (slot.status !== 'available') { toast('改期目標必須是可選(白色)時段', 'error'); return; }
     await doReschedule(rescheduleFromDt, datetime);
     return;
   }
 
-  if (slot.status === 'available') {
-    await adminToggleBlock(datetime, true);
-  } else if (slot.status === 'blocked') {
-    await adminToggleBlock(datetime, false);
-  } else if (slot.status === 'booked') {
-    openBookedMenu(slot, datetime);
-  }
+  if (slot.status === 'available') await adminToggleBlock(datetime, true);
+  else if (slot.status === 'blocked') await adminToggleBlock(datetime, false);
+  else if (slot.status === 'booked') openBookedMenu(slot, datetime);
 }
 
 async function adminToggleBlock(datetime, makeBlocked) {
   try {
     const action = makeBlocked ? 'block' : 'unblock';
     const res = await api.post(action, { admin_key: state.adminKey, datetime });
-    if (res.ok) {
-      toast(makeBlocked ? '已封鎖時段' : '已解除封鎖');
-    } else {
-      toast('失敗:' + humanError(res.error, res.msg), 'error');
-    }
+    if (res.ok) toast(makeBlocked ? '已封鎖' : '已解除封鎖');
+    else toast('失敗:' + humanError(res.error, res.msg), 'error');
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
   }
   await refreshCalendar();
-  if (state.selectedDate) openDrawer(state.selectedDate);
 }
 
-// =========================================================================
-// 老師功能 — 已預約 slot 選單
-// =========================================================================
 function openBookedMenu(slot, datetime) {
-  const dateLabel = formatDateLabel(state.selectedDate);
+  const dateKey = datetime.split('T')[0];
+  const dateLabel = formatDateLabel(dateKey);
   const overlay = el('div', { class: 'modal-overlay' });
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
 
@@ -508,7 +537,7 @@ function openBookedMenu(slot, datetime) {
     el('h3', {}, `${dateLabel} ${slot.time}`),
     el('div', { class: 'modal-info' },
       el('div', {}, `學生:${slot.student_name || '(未填名)'}`),
-      el('div', {}, `邀請碼:`, el('code', {}, slot.invite_code || '-')),
+      el('div', {}, '邀請碼:', el('code', {}, slot.invite_code || '-')),
     ),
     el('div', { class: 'modal-actions' },
       el('button', { class: 'btn-secondary', onclick: () => overlay.remove() }, '關閉'),
@@ -530,16 +559,11 @@ async function adminUnbook(datetime) {
     toast('連線失敗:' + err.message, 'error');
   }
   await refreshCalendar();
-  if (state.selectedDate) openDrawer(state.selectedDate);
 }
 
-// =========================================================================
-// 老師功能 — 改期(兩階段:選目標 → 確認)
-// =========================================================================
 function startReschedule(fromDt, slot) {
   rescheduleFromDt = fromDt;
   document.body.classList.add('reschedule-mode');
-  closeDrawer();
   showRescheduleBanner(slot);
   toast('請點選任一可選(白色)時段作為新時段');
 }
@@ -568,28 +592,23 @@ async function doReschedule(fromDt, toDt) {
   if (!confirm(`確認改期?\n從:${fromLabel}\n到:${toLabel}`)) return;
   try {
     const res = await api.post('reschedule', { admin_key: state.adminKey, from_dt: fromDt, to_dt: toDt });
-    if (res.ok) {
-      toast('已改期');
-      cancelReschedule();
-    } else {
-      toast('改期失敗:' + humanError(res.error, res.msg), 'error');
-    }
+    if (res.ok) { toast('已改期'); cancelReschedule(); }
+    else toast('改期失敗:' + humanError(res.error, res.msg), 'error');
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
   }
   await refreshCalendar();
-  if (state.selectedDate) openDrawer(state.selectedDate);
 }
 
 // =========================================================================
-// 老師功能 — 邀請碼管理
+// 老師 — 邀請碼管理
 // =========================================================================
 async function openStudentManager() {
   const overlay = el('div', { class: 'modal-overlay' });
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
 
-  const nameInput = el('input', { type: 'text', placeholder: '學生姓名', id: 'new-student-name', autocomplete: 'off' });
-  const emailInput = el('input', { type: 'email', placeholder: 'Email (選填)', id: 'new-student-email', autocomplete: 'off' });
+  const nameInput = el('input', { type: 'text', placeholder: '學生姓名', autocomplete: 'off' });
+  const emailInput = el('input', { type: 'email', placeholder: 'Email (選填)', autocomplete: 'off' });
   const createBtn = el('button', { class: 'btn-primary inline', onclick: async () => {
     const name = nameInput.value.trim();
     if (!name) { toast('請輸入姓名', 'error'); return; }
@@ -679,6 +698,115 @@ function copyCode(code) {
 }
 
 // =========================================================================
+// 預約總覽
+// =========================================================================
+function openSummary() {
+  const overlay = el('div', { class: 'modal-overlay' });
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  const modal = el('div', { class: 'modal modal-wide' });
+
+  if (state.isAdmin) {
+    modal.appendChild(el('h3', {}, '預約總覽 — 全體學生'));
+    modal.appendChild(el('p', { class: 'modal-hint' }, '依預約次數從多到少排序。點某時段可跳到該週查看。'));
+    modal.appendChild(renderAdminSummary(overlay));
+  } else {
+    modal.appendChild(el('h3', {}, '我的預約'));
+    modal.appendChild(el('p', { class: 'modal-hint' }, '依時間排序。點某時段可跳到該週查看。'));
+    modal.appendChild(renderStudentSummary(overlay));
+  }
+
+  modal.appendChild(el('div', { class: 'modal-actions' },
+    el('button', { class: 'btn-secondary', onclick: () => overlay.remove() }, '關閉'),
+  ));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+function collectBookings() {
+  const out = [];
+  if (!state.calendar) return out;
+  Object.entries(state.calendar).forEach(([dateKey, slots]) => {
+    slots.forEach(s => {
+      if (state.isAdmin) {
+        if (s.status === 'booked') out.push({ ...s, dateKey, datetime: `${dateKey}T${s.time}` });
+      } else {
+        if (s.status === 'mine') out.push({ ...s, dateKey, datetime: `${dateKey}T${s.time}` });
+      }
+    });
+  });
+  return out;
+}
+
+function renderAdminSummary(overlay) {
+  const wrap = el('div', { class: 'summary-list' });
+  const all = collectBookings();
+  if (!all.length) {
+    wrap.appendChild(el('div', { class: 'empty-msg' }, '目前無學生預約'));
+    return wrap;
+  }
+  const groups = {};
+  all.forEach(b => {
+    const key = b.invite_code || '(unknown)';
+    if (!groups[key]) groups[key] = { name: b.student_name || '(未填名)', code: key, bookings: [] };
+    groups[key].bookings.push(b);
+  });
+  const sorted = Object.values(groups).sort((a, b) => b.bookings.length - a.bookings.length);
+  sorted.forEach(g => {
+    g.bookings.sort((a, b) => a.datetime.localeCompare(b.datetime));
+    wrap.appendChild(el('div', { class: 'summary-student' },
+      el('div', { class: 'summary-student-head' },
+        el('span', { class: 'summary-student-name' }, g.name),
+        el('code', {}, g.code),
+        el('span', { class: 'summary-count' }, `共 ${g.bookings.length} 次`),
+      ),
+      el('ul', { class: 'summary-bookings' },
+        ...g.bookings.map(b => el('li', {
+          onclick: () => { jumpToWeek(b.dateKey); overlay.remove(); },
+        }, formatBookingLabel(b))),
+      ),
+    ));
+  });
+  return wrap;
+}
+
+function renderStudentSummary(overlay) {
+  const wrap = el('div', { class: 'summary-list' });
+  const all = collectBookings();
+  if (!all.length) {
+    wrap.appendChild(el('div', { class: 'empty-msg' }, '你目前沒有預約'));
+    return wrap;
+  }
+  all.sort((a, b) => a.datetime.localeCompare(b.datetime));
+  wrap.appendChild(el('div', { class: 'summary-student' },
+    el('div', { class: 'summary-student-head' },
+      el('span', { class: 'summary-student-name' }, state.studentName),
+      el('span', { class: 'summary-count' }, `共 ${all.length} 次`),
+    ),
+    el('ul', { class: 'summary-bookings' },
+      ...all.map(b => el('li', {
+        onclick: () => { jumpToWeek(b.dateKey); overlay.remove(); },
+      }, formatBookingLabel(b))),
+    ),
+  ));
+  return wrap;
+}
+
+function formatBookingLabel(b) {
+  const [y, m, d] = b.dateKey.split('-').map(Number);
+  const wk = WEEKDAYS[new Date(y, m - 1, d).getDay()];
+  return `${m}/${d} (週${wk}) ${b.time}`;
+}
+
+function jumpToWeek(dateKey) {
+  if (!state.weeks) return;
+  const idx = state.weeks.findIndex(w => w.days.some(d => d.dateKey === dateKey));
+  if (idx >= 0 && idx !== state.selectedWeek) {
+    state.selectedWeek = idx;
+    renderMain();
+  }
+}
+
+// =========================================================================
 // Mock 模式 — `?mock=1` 啟用,資料只存記憶體,重整還原
 // =========================================================================
 const mockData = {
@@ -687,7 +815,6 @@ const mockData = {
     { invite_code: 'DEMO1234', name: '示範學生 A', email: 'demo-a@example.com', created_at: new Date().toISOString() },
     { invite_code: 'TEST5678', name: '示範學生 B', email: '', created_at: new Date().toISOString() },
   ],
-  // sparse:只記非 available 的時段;讀的時候 fallback default 'available'
   slots: {
     '2026-06-01T10:00': { status: 'blocked' },
     '2026-06-01T10:30': { status: 'blocked' },
@@ -751,8 +878,8 @@ function mockEnumerateAllSlots() {
   months.forEach(({ year, month, days }) => {
     for (let d = 1; d <= days; d++) {
       const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      for (let h = 9; h < 22; h++) {
-        for (let m = 0; m < 60; m += 30) {
+      for (let h = HOURS_START; h < HOURS_END; h++) {
+        for (let m = 0; m < 60; m += SLOT_MINUTES) {
           const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
           out.push({ dateKey, time, datetime: `${dateKey}T${time}` });
         }
