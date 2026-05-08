@@ -463,7 +463,7 @@ function renderTableCell(slot, dateKey, time) {
 
   if (state.isAdmin) {
     if (slot.status === 'booked') {
-      td.appendChild(el('span', { class: 'cell-name' }, shortName(slot.student_name)));
+      td.appendChild(el('span', { class: 'cell-name', title: slot.student_name || '' }, slot.student_name || '學生'));
     } else if (slot.status === 'blocked') {
       td.appendChild(el('span', { class: 'cell-icon' }, '⛔'));
     }
@@ -477,12 +477,6 @@ function renderTableCell(slot, dateKey, time) {
     }
   }
   return td;
-}
-
-function shortName(name) {
-  if (!name) return '?';
-  const trimmed = String(name).trim();
-  return trimmed.length > 3 ? trimmed.slice(0, 3) : trimmed;
 }
 
 // =========================================================================

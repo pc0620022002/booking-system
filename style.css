@@ -193,8 +193,8 @@ code {
 .week-table .date-col-out .date { color: #ccc; }
 
 .week-table td.slot {
-  padding: 0;
-  height: 32px;
+  padding: 2px 3px;
+  min-height: 32px;
   border-radius: 4px;
   text-align: center;
   cursor: pointer;
@@ -233,7 +233,14 @@ body.admin-mode .week-table td.slot-booked {
   color: #b71c1c;
   border-color: #e57373;
 }
-.cell-name { font-size: 11px; font-weight: 600; }
+.cell-name {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  word-break: break-word;
+  display: inline-block;
+  max-width: 100%;
+}
 .cell-icon { font-size: 12px; }
 
 /* 改期模式:可選時段加上脈動 */
@@ -249,7 +256,7 @@ body.reschedule-mode .week-table td.slot-available {
 @media (max-width: 700px) {
   .week-table { font-size: 11px; min-width: 500px; }
   .week-table .time-col { width: 44px; }
-  .week-table td.slot { height: 28px; }
+  .week-table td.slot { min-height: 28px; }
   .week-table .date-col .date { font-size: 13px; }
   .week-label { font-size: 13px; }
 }
