@@ -485,3 +485,14 @@ body.reschedule-mode #app { padding-top: 56px; }
   border-radius: 3px;
   font-size: 13px;
 }
+.mock-reset-btn {
+  background: rgba(255,255,255,0.25);
+  color: #fff;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-left: 12px;
+  cursor: pointer;
+  border: none;
+}
+.mock-reset-btn:hover { background: rgba(255,255,255,0.4); }

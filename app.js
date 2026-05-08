@@ -859,19 +859,63 @@ const mockData = {
 
 function showMockBanner() {
   const banner = el('div', { class: 'mock-banner' },
-    '⚠️ 示範模式 — 資料只存記憶體,重整還原。學生碼:',
+    '⚠️ 示範模式 — 資料存 localStorage(跨分頁同步,重整保留)。學生碼:',
     el('code', {}, 'Andrew'),
     ' / ',
     el('code', {}, 'Bob'),
-    '。老師後台 URL 加 ',
+    '。老師後台 ',
     el('code', {}, '?mock=1&admin=admin'),
+    el('button', { class: 'mock-reset-btn', onclick: resetMockState }, '重置示範資料'),
   );
   document.body.insertBefore(banner, document.body.firstChild);
 }
 
+function resetMockState() {
+  if (!confirm('確定重置示範資料?\n\n所有在 mock 模式建立的學生 / 預約 / 封鎖都會清除,還原到初始示範狀態。')) return;
+  localStorage.removeItem(MOCK_STORAGE_KEY);
+  location.reload();
+}
+
+const MOCK_STORAGE_KEY = 'booking_mock_state_v1';
+
+function loadMockState() {
+  try {
+    const raw = localStorage.getItem(MOCK_STORAGE_KEY);
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    if (saved.students) mockData.students = saved.students;
+    if (saved.slots) mockData.slots = saved.slots;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function saveMockState() {
+  try {
+    localStorage.setItem(MOCK_STORAGE_KEY, JSON.stringify({
+      students: mockData.students,
+      slots: mockData.slots,
+    }));
+  } catch (e) {
+    console.warn('saveMockState failed:', e);
+  }
+}
+
+const MOCK_MUTATING_ACTIONS = new Set([
+  'book', 'block', 'unblock', 'unbook', 'reschedule', 'create_student', 'delete_student',
+]);
+
 function installMockApi() {
-  api.get = async (action, params = {}) => { await mockSleep(); return mockHandle(action, params, null); };
-  api.post = async (action, body = {}) => { await mockSleep(); return mockHandle(action, null, body); };
+  loadMockState(); // 載入既有狀態(若無則保留 mockData 預設)
+  api.get = async (action, params = {}) => { await mockSleep(); return mockHandleWithSave(action, params, null); };
+  api.post = async (action, body = {}) => { await mockSleep(); return mockHandleWithSave(action, null, body); };
+}
+
+function mockHandleWithSave(action, params, body) {
+  const result = mockHandle(action, params, body);
+  if (result && result.ok && MOCK_MUTATING_ACTIONS.has(action)) saveMockState();
+  return result;
 }
 
 const mockSleep = () => new Promise(r => setTimeout(r, 120));
