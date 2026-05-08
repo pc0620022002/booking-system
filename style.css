@@ -23,10 +23,19 @@ button {
   background: none;
   color: inherit;
 }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
 
-/* === Login === */
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  background: #f0f0f0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+/* === Login / Setup === */
 .login {
-  max-width: 360px;
+  max-width: 420px;
   margin: 80px auto;
   padding: 32px 28px;
   background: #fff;
@@ -35,8 +44,8 @@ button {
   text-align: center;
 }
 .login h1 { margin-bottom: 8px; font-size: 22px; }
-.login-hint { color: #666; margin-bottom: 24px; font-size: 14px; }
-.login input {
+.login-hint { color: #666; margin-bottom: 12px; font-size: 14px; }
+.login input[type="text"] {
   width: 100%;
   padding: 12px 16px;
   font-size: 18px;
@@ -47,7 +56,7 @@ button {
   text-transform: uppercase;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
-.login input:focus { outline: 2px solid #2196f3; border-color: #2196f3; }
+.login input[type="text"]:focus { outline: 2px solid #2196f3; border-color: #2196f3; }
 .login-error {
   margin-top: 12px;
   color: #d32f2f;
@@ -65,7 +74,28 @@ button {
   font-size: 16px;
   font-weight: 500;
 }
+.btn-primary.inline { margin-top: 0; width: auto; padding: 10px 16px; font-size: 14px; }
 .btn-primary:hover { background: #1976d2; }
+
+.btn-secondary {
+  padding: 8px 16px;
+  background: #f0f0f0;
+  color: #333;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.btn-secondary:hover { background: #e0e0e0; }
+
+.btn-danger {
+  padding: 8px 16px;
+  background: #f44336;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.btn-danger:hover { background: #d32f2f; }
 
 .btn-link {
   color: #2196f3;
@@ -133,7 +163,6 @@ button {
   padding: 3px;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
   justify-content: space-between;
   text-align: left;
   transition: background 0.1s, border-color 0.1s;
@@ -225,6 +254,7 @@ button {
   flex: 1;
 }
 .empty-msg { text-align: center; color: #999; padding: 32px 0; }
+.error-msg { text-align: center; color: #d32f2f; padding: 16px 0; font-size: 14px; }
 
 /* === Slot grid === */
 .slot-grid {
@@ -258,19 +288,170 @@ button {
 .slot-mine { background: #bbdefb; color: #0d47a1; border-color: #64b5f6; }
 .slot-unavailable { background: #eee; color: #aaa; }
 
-/* 老師視角顏色(覆寫 — body.admin-mode 才生效)*/
-body.admin-mode .slot-available {
+/* 老師視角顏色 */
+body.admin-mode .slot-available { background: #fff; color: #555; border-color: #ddd; }
+body.admin-mode .slot-blocked { background: #fff9c4; color: #6d4c00; border-color: #fbc02d; }
+body.admin-mode .slot-booked { background: #ffcdd2; color: #b71c1c; border-color: #e57373; }
+
+/* 改期模式:可選時段加上脈動 */
+body.reschedule-mode .slot-available {
+  animation: pulse-glow 1.4s infinite;
+  border-color: #2196f3;
+}
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(33, 150, 243, 0); }
+}
+
+/* === Toast === */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #323232;
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 6px;
+  font-size: 14px;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  animation: toast-in 0.2s ease-out;
+  max-width: 90vw;
+}
+.toast-error { background: #c62828; }
+.toast-leaving { animation: toast-out 0.2s ease-in forwards; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 16px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; }
+  to { opacity: 0; transform: translate(-50%, 16px); }
+}
+
+/* === Modal === */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 150;
+  padding: 16px;
+}
+.modal {
   background: #fff;
-  color: #555;
-  border-color: #ddd;
+  border-radius: 12px;
+  padding: 24px;
+  width: min(420px, 100%);
+  max-height: 85vh;
+  overflow-y: auto;
+  animation: modal-in 0.15s ease-out;
 }
-body.admin-mode .slot-blocked {
-  background: #fff9c4;
-  color: #6d4c00;
-  border-color: #fbc02d;
+.modal-wide { width: min(560px, 100%); }
+.modal h3 { font-size: 18px; margin-bottom: 12px; }
+.modal h4 { font-size: 14px; margin: 16px 0 8px; color: #555; font-weight: 600; }
+.modal-info {
+  background: #f7f7f7;
+  padding: 12px 16px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
-body.admin-mode .slot-booked {
-  background: #ffcdd2;
-  color: #b71c1c;
-  border-color: #e57373;
+.modal-hint { color: #666; font-size: 13px; margin-bottom: 12px; }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  flex-wrap: wrap;
 }
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* === 邀請碼建立表單 === */
+.create-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 12px;
+  background: #f7f7f7;
+  border-radius: 8px;
+}
+.create-form input {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+}
+.create-form input:focus { outline: 2px solid #2196f3; border-color: #2196f3; }
+@media (max-width: 500px) {
+  .create-form { grid-template-columns: 1fr; }
+}
+
+/* === 學生列表 === */
+.student-list {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.student-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #fafafa;
+  border-radius: 6px;
+  border: 1px solid #f0f0f0;
+}
+.student-info { display: flex; flex-direction: column; }
+.student-name { font-weight: 500; font-size: 14px; }
+.student-email { font-size: 12px; color: #888; }
+.student-code { display: flex; align-items: center; gap: 4px; }
+.student-code code {
+  font-size: 14px;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+
+/* === 改期 banner === */
+.banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 90;
+  padding: 10px 16px;
+  font-size: 14px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.banner-reschedule {
+  background: #2196f3;
+  color: #fff;
+}
+.banner-reschedule .banner-cancel {
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.5);
+  border-radius: 4px;
+  padding: 2px 10px;
+}
+.banner-reschedule .banner-cancel:hover {
+  background: rgba(255,255,255,0.15);
+  text-decoration: none;
+}
+body.reschedule-mode #app { padding-top: 56px; }

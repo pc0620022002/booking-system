@@ -1,14 +1,14 @@
-// booking-system — 前端入口
+// booking-system — 前端
 // 流程:
 //   1. 判斷 ?admin=xxx → 老師模式 / 否則 → 學生模式
-//   2. 學生先試用 localStorage 的邀請碼登入,失敗再顯示登入框
-//   3. 載入月曆資料 → 渲染 3 個月並排月曆
-//   4. 點某天 → 抽屜展開該日 26 個半小時格
+//   2. 學生先試用 localStorage 邀請碼,失敗才顯示登入框
+//   3. 載入月曆 → 渲染 3 個月並排月曆 + 抽屜
+//   4. 點時段 → 學生:預約 / 老師:block toggle 或開選單(取消、改期)
 
 // =========================================================================
-// 設定
+// 設定 — 部署後請把 GAS Web App URL 填進來
 // =========================================================================
-const API_BASE = ''; // TODO: Step 6 部署後填入 GAS Web App URL
+const API_BASE = '';
 
 // =========================================================================
 // State
@@ -18,9 +18,12 @@ const state = {
   adminKey: '',
   inviteCode: '',
   studentName: '',
-  calendar: null,         // { "2026-06-01": [{time, status, ...}, ...], ... }
+  calendar: null,
   selectedDate: null,
 };
+
+// 改期模式:點老師後台中已預約時段 → 改期 → 設這個值 → 下一次點 available 時段就觸發改期 API
+let rescheduleFromDt = null;
 
 // =========================================================================
 // localStorage
@@ -38,7 +41,7 @@ const storage = {
 // =========================================================================
 const api = {
   async get(action, params = {}) {
-    if (!API_BASE) throw new Error('API_BASE 尚未設定 (見 Step 6)');
+    if (!API_BASE) throw new Error('API_BASE 尚未設定');
     const url = new URL(API_BASE);
     url.searchParams.set('action', action);
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
@@ -46,7 +49,7 @@ const api = {
     return await res.json();
   },
   async post(action, body = {}) {
-    if (!API_BASE) throw new Error('API_BASE 尚未設定 (見 Step 6)');
+    if (!API_BASE) throw new Error('API_BASE 尚未設定');
     const res = await fetch(API_BASE, {
       method: 'POST',
       body: JSON.stringify({ action, ...body }),
@@ -77,9 +80,50 @@ function el(tag, attrs = {}, ...children) {
 }
 
 // =========================================================================
+// Toast / 訊息
+// =========================================================================
+function toast(msg, type = 'info') {
+  const t = el('div', { class: `toast toast-${type}` }, msg);
+  document.body.appendChild(t);
+  setTimeout(() => {
+    t.classList.add('toast-leaving');
+    setTimeout(() => t.remove(), 200);
+  }, 2200);
+}
+
+function humanError(code, msg) {
+  const map = {
+    'slot_taken': '此時段已被其他學生預約或老師封鎖',
+    'invalid_code': '邀請碼無效',
+    'busy_try_again': '系統忙碌,請稍後再試',
+    'slot_not_found': '時段不存在',
+    'slot_booked_cannot_block': '此時段已有學生預約,請先取消預約再封鎖',
+    'slot_not_blocked': '此時段並非封鎖狀態',
+    'slot_not_booked': '此時段並非已預約狀態',
+    'from_not_booked': '原始時段不是已預約狀態',
+    'to_not_available': '目標時段並非可選狀態',
+    'missing_code': '缺少邀請碼',
+    'missing_datetime': '缺少時段參數',
+    'missing_name': '缺少學生姓名',
+    'unknown_action': '不支援的動作',
+    'admin_key invalid': '老師碼錯誤',
+    'admin_key invalid (admin_key invalid)': '老師碼錯誤',
+  };
+  if (map[code]) return map[code];
+  if (msg && msg.includes('admin_key invalid')) return '老師碼錯誤';
+  if (msg && msg.includes('ADMIN_KEY not configured')) return 'GAS 端尚未設定 ADMIN_KEY';
+  return msg ? `${code}: ${msg}` : code;
+}
+
+// =========================================================================
 // Init
 // =========================================================================
 async function init() {
+  if (!API_BASE) {
+    renderSetupPage();
+    return;
+  }
+
   const params = new URLSearchParams(location.search);
   const adminKey = params.get('admin');
 
@@ -119,7 +163,7 @@ async function loadAdminCalendar() {
   try {
     const res = await api.get('admin_calendar', { admin_key: state.adminKey });
     if (!res.ok) {
-      alert('無法載入老師後台:' + (res.error || '') + ' / ' + (res.msg || ''));
+      alert('無法載入老師後台:' + humanError(res.error, res.msg));
       return false;
     }
     state.calendar = res.data.days;
@@ -134,10 +178,31 @@ async function refreshCalendar() {
   if (state.isAdmin) await loadAdminCalendar();
   else await tryLoginStudent(state.inviteCode);
   renderMain();
+  // 如果 reschedule banner 在,重新加上
+  if (rescheduleFromDt) showRescheduleBanner();
 }
 
 // =========================================================================
-// Render — Login screen (學生)
+// Render — 部署前提示頁
+// =========================================================================
+function renderSetupPage() {
+  const app = $('#app');
+  app.innerHTML = '';
+  app.appendChild(el('div', { class: 'login' },
+    el('h1', {}, '尚未部署'),
+    el('p', { class: 'login-hint' },
+      '本前端尚未連接後端 API。'),
+    el('p', { class: 'login-hint' },
+      '請依 DEPLOY.md 部署 GAS Web App,把 URL 填進 ',
+      el('code', {}, 'app.js'),
+      ' 的 ',
+      el('code', {}, 'API_BASE'),
+      ' 後再訪問。'),
+  ));
+}
+
+// =========================================================================
+// Render — Login (學生)
 // =========================================================================
 function renderLogin() {
   const app = $('#app');
@@ -177,7 +242,7 @@ async function doLogin() {
 
 function doLogout() {
   if (state.isAdmin) {
-    location.href = location.pathname; // 拿掉 ?admin=
+    location.href = location.pathname;
   } else {
     storage.clearInviteCode();
     state.inviteCode = '';
@@ -188,7 +253,7 @@ function doLogout() {
 }
 
 // =========================================================================
-// Render — Main (header + months + drawer)
+// Render — Main
 // =========================================================================
 function renderMain() {
   const app = $('#app');
@@ -268,7 +333,7 @@ function renderDayCell(dateKey, dayNum) {
   const stats = el('div', { class: 'day-stats' });
   if (state.isAdmin) {
     if (avail) stats.appendChild(el('span', { class: 'stat avail', title: '可選' }, String(avail)));
-    if (blocked) stats.appendChild(el('span', { class: 'stat blocked', title: '我 block' }, String(blocked)));
+    if (blocked) stats.appendChild(el('span', { class: 'stat blocked', title: '我封鎖' }, String(blocked)));
     if (booked) stats.appendChild(el('span', { class: 'stat booked', title: '已預約' }, String(booked)));
   } else {
     if (mine) stats.appendChild(el('span', { class: 'stat mine' }, `${mine} 已約`));
@@ -303,14 +368,17 @@ function drawerOverlayClick(e) {
 
 function openDrawer(dateKey) {
   state.selectedDate = dateKey;
-  $('#drawer-title').textContent = formatDateLabel(dateKey);
+  const titleEl = $('#drawer-title');
+  if (titleEl) titleEl.textContent = formatDateLabel(dateKey);
   renderSlotGrid();
-  $('#drawer').classList.remove('hidden');
+  const drawer = $('#drawer');
+  if (drawer) drawer.classList.remove('hidden');
 }
 
 function closeDrawer() {
   state.selectedDate = null;
-  $('#drawer').classList.add('hidden');
+  const drawer = $('#drawer');
+  if (drawer) drawer.classList.add('hidden');
 }
 
 function formatDateLabel(dateKey) {
@@ -339,11 +407,7 @@ function renderSlotButton(slot) {
 }
 
 function renderStudentSlot(slot, datetime) {
-  // status: available / mine / unavailable
-  const btn = el('button', {
-    class: `slot slot-${slot.status}`,
-    dataset: { datetime },
-  });
+  const btn = el('button', { class: `slot slot-${slot.status}`, dataset: { datetime } });
   btn.appendChild(el('span', { class: 'slot-time' }, slot.time));
   if (slot.status === 'mine') btn.appendChild(el('span', { class: 'slot-meta' }, '已預約'));
   if (slot.status === 'available') {
@@ -355,11 +419,7 @@ function renderStudentSlot(slot, datetime) {
 }
 
 function renderAdminSlot(slot, datetime) {
-  // status: available / blocked / booked
-  const btn = el('button', {
-    class: `slot slot-${slot.status}`,
-    dataset: { datetime },
-  });
+  const btn = el('button', { class: `slot slot-${slot.status}`, dataset: { datetime } });
   btn.appendChild(el('span', { class: 'slot-time' }, slot.time));
   if (slot.status === 'blocked') btn.appendChild(el('span', { class: 'slot-meta' }, '⛔ 已封鎖'));
   else if (slot.status === 'booked') btn.appendChild(el('span', { class: 'slot-meta' }, slot.student_name || '學生'));
@@ -368,21 +428,252 @@ function renderAdminSlot(slot, datetime) {
 }
 
 // =========================================================================
-// Slot 互動 (Step 4 / 5 完整實作)
+// 學生功能 — 預約
 // =========================================================================
-function onStudentBook(datetime, time) {
-  alert(`(Step 4 待實作) 學生預約 ${datetime}`);
-}
-
-function onAdminSlotClick(slot, datetime) {
-  alert(`(Step 5 待實作) 老師動作 ${datetime},狀態=${slot.status}`);
-}
-
-function openStudentManager() {
-  alert('(Step 5 待實作) 邀請碼管理');
+async function onStudentBook(datetime, time) {
+  const dateLabel = formatDateLabel(state.selectedDate);
+  if (!confirm(`確定預約 ${dateLabel} ${time} 嗎?\n\n預約後無法自行取消,需聯絡老師。`)) return;
+  try {
+    const res = await api.post('book', { code: state.inviteCode, datetime });
+    if (res.ok) {
+      toast('預約成功');
+    } else {
+      toast('預約失敗:' + humanError(res.error, res.msg), 'error');
+    }
+  } catch (err) {
+    toast('連線失敗:' + err.message, 'error');
+  }
+  // 不論結果都刷新(失敗可能因為時段已被搶走,要更新顯示)
+  await refreshCalendar();
+  if (state.selectedDate) openDrawer(state.selectedDate);
 }
 
 // =========================================================================
-// 啟動
+// 老師功能 — slot 點擊路由
+// =========================================================================
+async function onAdminSlotClick(slot, datetime) {
+  // 改期模式:第二次點 → 選擇目標
+  if (rescheduleFromDt) {
+    if (rescheduleFromDt === datetime) {
+      cancelReschedule();
+      return;
+    }
+    if (slot.status !== 'available') {
+      toast('改期目標必須是可選(白色)時段', 'error');
+      return;
+    }
+    await doReschedule(rescheduleFromDt, datetime);
+    return;
+  }
+
+  if (slot.status === 'available') {
+    await adminToggleBlock(datetime, true);
+  } else if (slot.status === 'blocked') {
+    await adminToggleBlock(datetime, false);
+  } else if (slot.status === 'booked') {
+    openBookedMenu(slot, datetime);
+  }
+}
+
+async function adminToggleBlock(datetime, makeBlocked) {
+  try {
+    const action = makeBlocked ? 'block' : 'unblock';
+    const res = await api.post(action, { admin_key: state.adminKey, datetime });
+    if (res.ok) {
+      toast(makeBlocked ? '已封鎖時段' : '已解除封鎖');
+    } else {
+      toast('失敗:' + humanError(res.error, res.msg), 'error');
+    }
+  } catch (err) {
+    toast('連線失敗:' + err.message, 'error');
+  }
+  await refreshCalendar();
+  if (state.selectedDate) openDrawer(state.selectedDate);
+}
+
+// =========================================================================
+// 老師功能 — 已預約 slot 選單
+// =========================================================================
+function openBookedMenu(slot, datetime) {
+  const dateLabel = formatDateLabel(state.selectedDate);
+  const overlay = el('div', { class: 'modal-overlay' });
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+  const modal = el('div', { class: 'modal' },
+    el('h3', {}, `${dateLabel} ${slot.time}`),
+    el('div', { class: 'modal-info' },
+      el('div', {}, `學生:${slot.student_name || '(未填名)'}`),
+      el('div', {}, `邀請碼:`, el('code', {}, slot.invite_code || '-')),
+    ),
+    el('div', { class: 'modal-actions' },
+      el('button', { class: 'btn-secondary', onclick: () => overlay.remove() }, '關閉'),
+      el('button', { class: 'btn-secondary', onclick: () => { overlay.remove(); startReschedule(datetime, slot); } }, '改期'),
+      el('button', { class: 'btn-danger', onclick: async () => { overlay.remove(); await adminUnbook(datetime); } }, '取消預約'),
+    ),
+  );
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+async function adminUnbook(datetime) {
+  if (!confirm('確定取消這位學生的預約嗎?\n(該時段會釋放為可選)')) return;
+  try {
+    const res = await api.post('unbook', { admin_key: state.adminKey, datetime });
+    if (res.ok) toast('已取消預約');
+    else toast('失敗:' + humanError(res.error, res.msg), 'error');
+  } catch (err) {
+    toast('連線失敗:' + err.message, 'error');
+  }
+  await refreshCalendar();
+  if (state.selectedDate) openDrawer(state.selectedDate);
+}
+
+// =========================================================================
+// 老師功能 — 改期(兩階段:選目標 → 確認)
+// =========================================================================
+function startReschedule(fromDt, slot) {
+  rescheduleFromDt = fromDt;
+  document.body.classList.add('reschedule-mode');
+  closeDrawer();
+  showRescheduleBanner(slot);
+  toast('請點選任一可選(白色)時段作為新時段');
+}
+
+function showRescheduleBanner(slot) {
+  const existing = document.getElementById('reschedule-banner');
+  if (existing) existing.remove();
+  const fromLabel = rescheduleFromDt.replace('T', ' ');
+  const banner = el('div', { class: 'banner banner-reschedule', id: 'reschedule-banner' },
+    el('span', {}, `改期模式:從 ${fromLabel}${slot ? ` (${slot.student_name || '學生'})` : ''} 改到 → 請點目標時段`),
+    el('button', { class: 'btn-link banner-cancel', onclick: cancelReschedule }, '取消'),
+  );
+  document.body.appendChild(banner);
+}
+
+function cancelReschedule() {
+  rescheduleFromDt = null;
+  document.body.classList.remove('reschedule-mode');
+  const b = document.getElementById('reschedule-banner');
+  if (b) b.remove();
+}
+
+async function doReschedule(fromDt, toDt) {
+  const fromLabel = fromDt.replace('T', ' ');
+  const toLabel = toDt.replace('T', ' ');
+  if (!confirm(`確認改期?\n從:${fromLabel}\n到:${toLabel}`)) return;
+  try {
+    const res = await api.post('reschedule', { admin_key: state.adminKey, from_dt: fromDt, to_dt: toDt });
+    if (res.ok) {
+      toast('已改期');
+      cancelReschedule();
+    } else {
+      toast('改期失敗:' + humanError(res.error, res.msg), 'error');
+    }
+  } catch (err) {
+    toast('連線失敗:' + err.message, 'error');
+  }
+  await refreshCalendar();
+  if (state.selectedDate) openDrawer(state.selectedDate);
+}
+
+// =========================================================================
+// 老師功能 — 邀請碼管理
+// =========================================================================
+async function openStudentManager() {
+  const overlay = el('div', { class: 'modal-overlay' });
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+  const nameInput = el('input', { type: 'text', placeholder: '學生姓名', id: 'new-student-name', autocomplete: 'off' });
+  const emailInput = el('input', { type: 'email', placeholder: 'Email (選填)', id: 'new-student-email', autocomplete: 'off' });
+  const createBtn = el('button', { class: 'btn-primary inline', onclick: async () => {
+    const name = nameInput.value.trim();
+    if (!name) { toast('請輸入姓名', 'error'); return; }
+    createBtn.disabled = true;
+    try {
+      const res = await api.post('create_student', {
+        admin_key: state.adminKey,
+        name,
+        email: emailInput.value.trim(),
+      });
+      if (res.ok) {
+        toast(`已建立邀請碼:${res.data.invite_code}`);
+        nameInput.value = '';
+        emailInput.value = '';
+        reloadStudentList();
+      } else {
+        toast('失敗:' + humanError(res.error, res.msg), 'error');
+      }
+    } catch (err) {
+      toast('連線失敗:' + err.message, 'error');
+    } finally {
+      createBtn.disabled = false;
+    }
+  } }, '建立邀請碼');
+
+  const list = el('div', { class: 'student-list', id: 'student-list' }, '載入中...');
+
+  const modal = el('div', { class: 'modal modal-wide' },
+    el('h3', {}, '邀請碼管理'),
+    el('p', { class: 'modal-hint' }, '建立新邀請碼,點「複製」把碼傳給學生。'),
+    el('div', { class: 'create-form' }, nameInput, emailInput, createBtn),
+    el('h4', {}, '學生列表'),
+    list,
+    el('div', { class: 'modal-actions' },
+      el('button', { class: 'btn-secondary', onclick: () => overlay.remove() }, '關閉'),
+    ),
+  );
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  reloadStudentList();
+}
+
+async function reloadStudentList() {
+  const list = $('#student-list');
+  if (!list) return;
+  list.innerHTML = '';
+  list.appendChild(el('div', { class: 'empty-msg' }, '載入中...'));
+  try {
+    const res = await api.get('list_students', { admin_key: state.adminKey });
+    list.innerHTML = '';
+    if (!res.ok) {
+      list.appendChild(el('div', { class: 'error-msg' }, '載入失敗:' + humanError(res.error, res.msg)));
+      return;
+    }
+    const students = res.data.students || [];
+    if (!students.length) {
+      list.appendChild(el('div', { class: 'empty-msg' }, '尚無學生'));
+      return;
+    }
+    students.forEach(s => {
+      list.appendChild(el('div', { class: 'student-row' },
+        el('div', { class: 'student-info' },
+          el('div', { class: 'student-name' }, s.name),
+          el('div', { class: 'student-email' }, s.email || ''),
+        ),
+        el('div', { class: 'student-code' },
+          el('code', {}, s.invite_code),
+          el('button', { class: 'btn-link', onclick: () => copyCode(s.invite_code) }, '複製'),
+        ),
+      ));
+    });
+  } catch (err) {
+    list.innerHTML = '';
+    list.appendChild(el('div', { class: 'error-msg' }, '連線失敗:' + err.message));
+  }
+}
+
+function copyCode(code) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(code).then(
+      () => toast('已複製:' + code),
+      () => toast('複製失敗,請手動選取', 'error'),
+    );
+  } else {
+    toast('瀏覽器不支援自動複製,請手動選取', 'error');
+  }
+}
+
+// =========================================================================
+// Boot
 // =========================================================================
 init();
