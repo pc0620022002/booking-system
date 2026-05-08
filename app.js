@@ -1003,20 +1003,27 @@ function mockEnumerateAllSlots() {
   return out;
 }
 
+function findMockStudent(code) {
+  if (!code) return null;
+  const target = String(code).trim().toLowerCase();
+  return mockData.students.find(s => String(s.invite_code).toLowerCase() === target);
+}
+
 function mockGetCalendar(code) {
-  const student = mockData.students.find(s => s.invite_code === code);
+  const student = findMockStudent(code);
   if (!student) return { ok: false, error: 'invalid_code' };
+  const myCodeLower = String(student.invite_code).toLowerCase();
   const days = {};
   mockEnumerateAllSlots().forEach(({ dateKey, time, datetime }) => {
     const slot = mockData.slots[datetime] || { status: 'available' };
     let view;
     if (slot.status === 'available') view = 'available';
-    else if (slot.status === 'booked' && slot.invite_code === code) view = 'mine';
+    else if (slot.status === 'booked' && String(slot.invite_code).toLowerCase() === myCodeLower) view = 'mine';
     else view = 'unavailable';
     if (!days[dateKey]) days[dateKey] = [];
     days[dateKey].push({ time, status: view });
   });
-  return { ok: true, data: { days, student: { name: student.name, code } } };
+  return { ok: true, data: { days, student: { name: student.name, code: student.invite_code } } };
 }
 
 function mockAdminCalendar(adminKey) {
@@ -1036,11 +1043,12 @@ function mockAdminCalendar(adminKey) {
 }
 
 function mockBook(code, datetime) {
-  const student = mockData.students.find(s => s.invite_code === code);
+  const student = findMockStudent(code);
   if (!student) return { ok: false, error: 'invalid_code' };
   const slot = mockData.slots[datetime];
   if (slot && slot.status !== 'available') return { ok: false, error: 'slot_taken' };
-  mockData.slots[datetime] = { status: 'booked', invite_code: code, student_name: student.name };
+  // 寫入用 sheet 裡的原始大小寫
+  mockData.slots[datetime] = { status: 'booked', invite_code: student.invite_code, student_name: student.name };
   return { ok: true, data: { datetime, status: 'mine', student_name: student.name } };
 }
 
