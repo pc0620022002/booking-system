@@ -249,6 +249,7 @@ document.addEventListener('visibilitychange', async () => {
   if (!state.calendar) return;
   if (rescheduleFromDt) return;
   if (document.querySelector('.modal-overlay')) return;
+  if (state.isAdmin && typeof blockBatchHasWork === 'function' && blockBatchHasWork()) return;
   const now = Date.now();
   if (now - lastVisCheck < 5000) return;
   lastVisCheck = now;
@@ -268,6 +269,8 @@ async function checkVersionAndMaybeRefresh() {
   if (rescheduleFromDt) return;
   if (document.querySelector('.modal-overlay')) return;
   if (document.hidden) return;
+  // 老師 batch 還沒跑完前不 refresh,避免 server 視角覆寫 user 還在累積的 optimistic state
+  if (state.isAdmin && typeof blockBatchHasWork === 'function' && blockBatchHasWork()) return;
   try {
     const res = await api.get('version', {});
     if (!res.ok) return;
@@ -772,8 +775,13 @@ async function onAdminSlotClick(slot, datetime) {
 const blockBatchQueue = {
   pending: new Map(), // datetime -> { action: 'block'|'unblock', snap }
   timer: null,
+  inFlight: false,    // 同時間最多一個 batch 在飛,避免並發 POST 撞 GAS lock
   DEBOUNCE_MS: 350,
 };
+
+function blockBatchHasWork() {
+  return blockBatchQueue.pending.size > 0 || blockBatchQueue.inFlight || blockBatchQueue.timer != null;
+}
 
 function queueAdminToggleBlock(datetime, makeBlocked) {
   // 已在 queue 內 → 保留最初的 snap(rollback 要回到「user 連按前」的狀態,不是中間狀態)
@@ -786,16 +794,33 @@ function queueAdminToggleBlock(datetime, makeBlocked) {
     action: makeBlocked ? 'block' : 'unblock',
     snap,
   });
+  scheduleFlush();
+}
+
+function scheduleFlush() {
+  // in-flight 中不另外排;等它跑完會自動接著 flush 累積的 pending
+  if (blockBatchQueue.inFlight) return;
   if (blockBatchQueue.timer) clearTimeout(blockBatchQueue.timer);
   blockBatchQueue.timer = setTimeout(flushBlockBatch, blockBatchQueue.DEBOUNCE_MS);
 }
 
 async function flushBlockBatch() {
   blockBatchQueue.timer = null;
+  if (blockBatchQueue.inFlight) return; // safety
   const items = Array.from(blockBatchQueue.pending.entries());
   blockBatchQueue.pending = new Map();
   if (items.length === 0) return;
+  blockBatchQueue.inFlight = true;
+  try {
+    await runBlockBatch(items);
+  } finally {
+    blockBatchQueue.inFlight = false;
+    // 跑批次中 user 又累積了新點擊 → 立刻接著跑(不再等 debounce,反正 user 已經等過一次往返)
+    if (blockBatchQueue.pending.size > 0) flushBlockBatch();
+  }
+}
 
+async function runBlockBatch(items) {
   const blockDts = [];
   const unblockDts = [];
   const snaps = new Map();
