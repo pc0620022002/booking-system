@@ -185,7 +185,9 @@ code {
   text-align: right;
   padding-right: 8px;
   background: transparent;
+  white-space: nowrap;
 }
+.week-table .time-col .time-sep { margin: 0 1px; }
 /* sticky 角落 cell 也要 solid 背景才不透視 */
 .week-table thead .time-col { background: #fff; }
 
@@ -276,6 +278,43 @@ body.reschedule-mode .week-table td.slot-available {
   .week-table td.slot { min-height: 28px; }
   .week-table .date-col .date { font-size: 13px; }
   .week-label { font-size: 13px; }
+}
+
+/* 手機:讓整個一週表格塞進螢幕,不再橫向 scroll
+   - #app / week-wrap padding 縮小,擠出更多寬度
+   - table 拿掉 min-width、border-spacing 縮到 1px
+   - time-col 拆兩行(start / end 垂直疊,sep 隱藏),寬度縮到 38px */
+@media (max-width: 560px) {
+  #app { padding: 8px; }
+  .week-wrap { padding: 8px 4px; }
+  .week-table {
+    font-size: 10px;
+    min-width: 0;
+    border-spacing: 1px;
+    table-layout: fixed;
+  }
+  .week-table th { padding: 4px 1px; }
+  .week-table .time-col {
+    width: 38px;
+    font-size: 9.5px;
+    padding-right: 3px;
+    line-height: 1.15;
+    white-space: normal;
+  }
+  .week-table .time-col .time-start,
+  .week-table .time-col .time-end { display: block; }
+  .week-table .time-col .time-sep { display: none; }
+  .week-table .date-col .wk { font-size: 10px; }
+  .week-table .date-col .date { font-size: 12px; }
+  .week-table td.slot {
+    min-height: 26px;
+    padding: 1px 2px;
+    font-size: 10px;
+    border-radius: 3px;
+  }
+  .cell-name { font-size: 9px; line-height: 1.15; }
+  .week-table td.slot-mine .cell-mine { font-size: 9px; }
+  .week-label { font-size: 12px; }
 }
 
 /* === Toast === */

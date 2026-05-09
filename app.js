@@ -646,12 +646,16 @@ function renderWeekTable(weekIndex) {
   for (let h = HOURS_START; h < HOURS_END; h++) {
     for (let m = 0; m < 60; m += SLOT_MINUTES) {
       const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-      // 顯示用範圍格式 "09:00-09:30"(end = start + SLOT_MINUTES)
+      // 顯示用範圍 "09:00-09:30"(end = start + SLOT_MINUTES)。拆成 start/sep/end 三個 span,
+      // 手機上 CSS 把 sep 隱藏 + start/end 垂直疊,讓 time-col 能縮到 ~36px 而表格不橫向 overflow
       const endTotal = h * 60 + m + SLOT_MINUTES;
       const endTime = `${String(Math.floor(endTotal / 60)).padStart(2, '0')}:${String(endTotal % 60).padStart(2, '0')}`;
-      const timeLabel = `${time}-${endTime}`;
       const row = el('tr');
-      row.appendChild(el('th', { class: 'time-col' }, timeLabel));
+      row.appendChild(el('th', { class: 'time-col' },
+        el('span', { class: 'time-start' }, time),
+        el('span', { class: 'time-sep' }, '-'),
+        el('span', { class: 'time-end' }, endTime),
+      ));
       week.days.forEach(d => {
         const isWeekend = d.weekday === 0 || d.weekday === 6;
         if (!d.inRange) {
