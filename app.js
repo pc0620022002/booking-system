@@ -126,6 +126,17 @@ function humanError(code, msg) {
 // =========================================================================
 // Init
 // =========================================================================
+function showInitLoading(label) {
+  const app = $('#app');
+  app.innerHTML = '';
+  const wrap = el('div', {});
+  wrap.style.cssText = 'text-align:center; padding:60px 20px; color:#666;';
+  wrap.innerHTML =
+    `<div style="font-size:18px; margin-bottom:8px;">⏳ ${label || '載入中...'}</div>` +
+    `<div style="font-size:13px; color:#999;">首次開啟可能需要 1–5 秒(後端剛喚醒),之後操作都會立即反應</div>`;
+  app.appendChild(wrap);
+}
+
 async function init() {
   const params = new URLSearchParams(location.search);
   const isMock = params.get('mock') === '1';
@@ -142,6 +153,7 @@ async function init() {
     state.isAdmin = true;
     state.adminKey = adminKey;
     document.body.classList.add('admin-mode');
+    showInitLoading('載入老師後台');
     const ok = await loadAdminCalendar();
     if (ok) renderMain();
     return;
@@ -149,6 +161,7 @@ async function init() {
 
   const saved = storage.getInviteCode();
   if (saved) {
+    showInitLoading('載入課表');
     const ok = await tryLoginStudent(saved);
     if (ok) { renderMain(); return; }
     storage.clearInviteCode();
@@ -222,6 +235,19 @@ function restoreSlot(datetime, snap) {
   if (idx >= 0) slots[idx] = snap;
 }
 
+// 切回分頁時自動重抓 calendar (cooldown 5s 避免抖動 / 改期模式中跳過)
+let lastVisRefresh = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (!state.calendar) return;        // 還沒登入
+  if (rescheduleFromDt) return;       // 改期中不打斷
+  if (document.querySelector('.modal-overlay')) return; // modal 開著時不打斷
+  const now = Date.now();
+  if (now - lastVisRefresh < 5000) return;
+  lastVisRefresh = now;
+  refreshCalendar();
+});
+
 // =========================================================================
 // Render — 部署前提示頁
 // =========================================================================
@@ -278,11 +304,15 @@ async function doLogin() {
   const errBox = $('#login-error');
   errBox.textContent = '';
   if (!code) { errBox.textContent = '請輸入邀請碼'; return; }
+  // 防呆:disable input + 顯示登入中,避免 user 連按或以為卡住
+  input.disabled = true;
+  errBox.textContent = '⏳ 登入中...(首次稍久)';
   const ok = await tryLoginStudent(code);
   if (ok) {
     storage.setInviteCode(code);
     renderMain();
   } else {
+    input.disabled = false;
     errBox.textContent = '邀請碼無效,請檢查或聯絡老師';
   }
 }
