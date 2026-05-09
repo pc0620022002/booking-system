@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- HTML 本身不要 cache:cache-bust 邏輯在這檔內,被 cache 卡住會讓所有 user 拿不到新版
+     (GitHub Pages 預設 max-age=600 對 HTML,push 後 user 要等 10 分鐘 / 開無痕才能拿新版) -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Andy致安老師課程預約</title>
 <script>
   // cache-bust:版號用「當前 5 秒區間」,push 完最多 5 秒所有 user 自動拿新版
