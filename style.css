@@ -178,7 +178,7 @@ code {
   border-bottom: 1px solid #e0e0e0;
 }
 .week-table .time-col {
-  width: 56px;
+  width: 72px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 12px;
   color: #666;
@@ -212,8 +212,8 @@ code {
 .week-table .date-col-out .date { color: #ccc; }
 
 .week-table td.slot {
-  padding: 2px 3px;
-  min-height: 32px;
+  padding: 6px 4px;
+  height: 44px;
   border-radius: 4px;
   text-align: center;
   cursor: pointer;
@@ -274,8 +274,8 @@ body.reschedule-mode .week-table td.slot-available {
 
 @media (max-width: 700px) {
   .week-table { font-size: 11px; min-width: 500px; }
-  .week-table .time-col { width: 44px; }
-  .week-table td.slot { min-height: 28px; }
+  .week-table .time-col { width: 60px; }
+  .week-table td.slot { height: 40px; padding: 4px 3px; }
   .week-table .date-col .date { font-size: 13px; }
   .week-label { font-size: 13px; }
 }
@@ -307,8 +307,8 @@ body.reschedule-mode .week-table td.slot-available {
   .week-table .date-col .wk { font-size: 10px; }
   .week-table .date-col .date { font-size: 12px; }
   .week-table td.slot {
-    min-height: 26px;
-    padding: 1px 2px;
+    height: 40px;
+    padding: 4px 2px;
     font-size: 10px;
     border-radius: 3px;
   }
