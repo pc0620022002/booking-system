@@ -9,7 +9,7 @@
 // =========================================================================
 // 設定
 // =========================================================================
-const API_BASE = '';
+const API_BASE = 'https://script.google.com/macros/s/AKfycbzxKaZayb72wwmNp6GnmybqOMGdvXF8lsSTx2SPsFBTjrtgVtMFvX7ae4ZlMwcN9oFLWw/exec';
 
 const RANGE_START = '2026-06-01';
 const RANGE_END = '2026-08-31';
