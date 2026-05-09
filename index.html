@@ -4,10 +4,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Andy致安老師課程預約</title>
-<link rel="stylesheet" href="style.css">
+<script>
+  // cache-bust:版號用「當前分鐘」,確保 push 完最多 1 分鐘內所有 user 拿新版
+  // 同分鐘內多次 reload 仍會走瀏覽器 cache,不浪費頻寬
+  (function() {
+    var v = '?v=' + Math.floor(Date.now() / 60000);
+    document.write('<link rel="stylesheet" href="style.css' + v + '">');
+    window.__assetVersion = v;
+  })();
+</script>
 </head>
 <body>
 <div id="app"></div>
-<script src="app.js"></script>
+<script>
+  document.write('<script src="app.js' + window.__assetVersion + '"><\/script>');
+</script>
 </body>
 </html>
