@@ -228,6 +228,7 @@ function adminCalendar(key) {
       status: r[1],
       invite_code: r[2] || '',
       student_name: r[3] || '',
+      booked_at: r[4] instanceof Date ? r[4].toISOString() : '',
     });
   });
   return okResp({ days, version: getVersion() });

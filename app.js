@@ -41,6 +41,8 @@ const storage = {
   getInviteCode() { return localStorage.getItem('booking_invite_code') || ''; },
   setInviteCode(code) { localStorage.setItem('booking_invite_code', code); },
   clearInviteCode() { localStorage.removeItem('booking_invite_code'); },
+  getLastSeenBookedAt() { return localStorage.getItem('booking_last_seen_at') || ''; },
+  setLastSeenBookedAt(iso) { localStorage.setItem('booking_last_seen_at', iso); },
 };
 
 // =========================================================================
@@ -380,6 +382,7 @@ function renderMain() {
 }
 
 function renderHeader() {
+  const recentBtn = state.isAdmin ? buildRecentBookingsBtn() : null;
   return el('header', { class: 'header' },
     el('div', { class: 'brand' }, state.isAdmin ? '課程預約' : 'Andy致安老師課程預約'),
     el('div', { class: 'user' },
@@ -387,12 +390,127 @@ function renderHeader() {
         ? el('span', { class: 'admin-tag' }, '老師後台')
         : el('span', { class: 'user-name' }, state.studentName),
       el('button', { class: 'btn-link', onclick: openSummary }, state.isAdmin ? '預約總覽' : '我的預約'),
+      recentBtn,
       state.isAdmin
         ? el('button', { class: 'btn-link', onclick: openStudentManager }, '管理邀請碼')
         : null,
       el('button', { class: 'btn-link', onclick: doLogout }, '登出'),
     ),
   );
+}
+
+function buildRecentBookingsBtn() {
+  const list = collectRecentBookings();
+  const lastSeen = storage.getLastSeenBookedAt();
+  const unread = list.filter(b => !lastSeen || b.booked_at > lastSeen).length;
+  const btn = el('button', { class: 'btn-link recent-btn', onclick: openRecentBookings }, '📋 預約紀錄');
+  if (unread > 0) {
+    btn.appendChild(el('span', { class: 'unread-badge' }, String(unread)));
+  }
+  return btn;
+}
+
+// 收集所有 booked slots 並按 booked_at desc 排序(只回有 booked_at 的)
+function collectRecentBookings() {
+  if (!state.calendar) return [];
+  const list = [];
+  Object.entries(state.calendar).forEach(([dateKey, slots]) => {
+    slots.forEach(s => {
+      if (s.status === 'booked' && s.booked_at) {
+        list.push({
+          datetime: `${dateKey}T${s.time}`,
+          dateKey,
+          time: s.time,
+          student_name: s.student_name || '(未填名)',
+          invite_code: s.invite_code || '',
+          booked_at: s.booked_at,
+        });
+      }
+    });
+  });
+  list.sort((a, b) => b.booked_at.localeCompare(a.booked_at));
+  return list;
+}
+
+function relativeTime(isoStr) {
+  if (!isoStr) return '';
+  const t = new Date(isoStr);
+  const diff = Date.now() - t.getTime();
+  if (diff < 60000) return '剛剛';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分鐘前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小時前`;
+  if (diff < 7 * 86400000) return `${Math.floor(diff / 86400000)} 天前`;
+  return Utilities_formatDateLocal(t);
+}
+
+function Utilities_formatDateLocal(d) {
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${m}/${day} ${hh}:${mm}`;
+}
+
+function openRecentBookings() {
+  const list = collectRecentBookings();
+  const lastSeen = storage.getLastSeenBookedAt();
+
+  const overlay = el('div', { class: 'modal-overlay' });
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeAndMarkSeen(); });
+
+  function closeAndMarkSeen() {
+    if (list.length > 0) storage.setLastSeenBookedAt(list[0].booked_at);
+    overlay.remove();
+    renderMain(); // 重畫 header 清掉 badge
+  }
+
+  const rows = el('div', { class: 'recent-list' });
+  if (list.length === 0) {
+    rows.appendChild(el('div', { class: 'empty-msg' }, '目前沒有任何預約'));
+  } else {
+    list.slice(0, 50).forEach(b => {
+      const isUnread = !lastSeen || b.booked_at > lastSeen;
+      const dateLabel = formatDateLabel(b.dateKey);
+      const [h, m] = b.time.split(':').map(Number);
+      const endTotal = h * 60 + m + 30;
+      const endTime = `${String(Math.floor(endTotal / 60)).padStart(2, '0')}:${String(endTotal % 60).padStart(2, '0')}`;
+      const slotLabel = `${dateLabel} ${b.time}-${endTime}`;
+      const row = el('div', { class: 'recent-row' + (isUnread ? ' is-unread' : '') });
+      row.appendChild(el('div', { class: 'recent-row-main' },
+        el('span', { class: 'recent-student' }, b.student_name),
+        el('span', { class: 'recent-arrow' }, ' → '),
+        el('span', { class: 'recent-slot' }, slotLabel),
+      ));
+      row.appendChild(el('span', { class: 'recent-when', title: b.booked_at }, relativeTime(b.booked_at)));
+      row.addEventListener('click', () => {
+        jumpToWeekContaining(b.dateKey);
+        closeAndMarkSeen();
+      });
+      rows.appendChild(row);
+    });
+  }
+
+  const modal = el('div', { class: 'modal modal-wide' },
+    el('h3', {}, '📋 預約紀錄'),
+    el('p', { class: 'modal-hint' }, '依預約時間由近到遠排序。點任一筆可跳到該週。關閉後新筆數歸零。'),
+    rows,
+    el('div', { class: 'modal-actions' },
+      el('button', { class: 'btn-secondary', onclick: closeAndMarkSeen }, '關閉'),
+    ),
+  );
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+function jumpToWeekContaining(dateKey) {
+  if (!state.weeks) return;
+  for (let i = 0; i < state.weeks.length; i++) {
+    if (state.weeks[i].days.some(d => d.dateKey === dateKey)) {
+      state.selectedWeek = i;
+      renderMain();
+      return;
+    }
+  }
 }
 
 // =========================================================================
