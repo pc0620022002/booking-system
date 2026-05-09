@@ -202,6 +202,26 @@ function mutateSlot(datetime, fields) {
   if (slot) Object.assign(slot, fields);
 }
 
+// 拍下 slot 當前完整狀態,用於樂觀更新失敗後回滾
+function snapshotSlot(datetime) {
+  if (!state.calendar) return null;
+  const [dateKey, time] = datetime.split('T');
+  const slots = state.calendar[dateKey];
+  if (!slots) return null;
+  const slot = slots.find(s => s.time === time);
+  return slot ? { ...slot } : null;
+}
+
+function restoreSlot(datetime, snap) {
+  if (!snap) return;
+  if (!state.calendar) return;
+  const [dateKey, time] = datetime.split('T');
+  const slots = state.calendar[dateKey];
+  if (!slots) return;
+  const idx = slots.findIndex(s => s.time === time);
+  if (idx >= 0) slots[idx] = snap;
+}
+
 // =========================================================================
 // Render — 部署前提示頁
 // =========================================================================
@@ -497,18 +517,23 @@ async function onStudentBook(datetime, time) {
   const dateKey = datetime.split('T')[0];
   const dateLabel = formatDateLabel(dateKey);
   if (!confirm(`確定預約 ${dateLabel} ${time} 嗎?\n\n預約後無法自行取消,需聯絡老師。`)) return;
+  // 樂觀更新:先改 UI,再背景發 API
+  const snap = snapshotSlot(datetime);
+  mutateSlot(datetime, { status: 'mine' });
+  renderMain();
   try {
     const res = await api.post('book', { code: state.inviteCode, datetime });
     if (res.ok) {
       toast('預約成功');
-      mutateSlot(datetime, { status: 'mine' });
-      renderMain();
     } else {
       toast('預約失敗:' + humanError(res.error, res.msg), 'error');
-      await refreshCalendar();
+      restoreSlot(datetime, snap);
+      renderMain();
     }
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
+    restoreSlot(datetime, snap);
+    renderMain();
   }
 }
 
@@ -531,19 +556,24 @@ async function onAdminSlotClick(slot, datetime) {
 }
 
 async function adminToggleBlock(datetime, makeBlocked) {
+  // 樂觀更新:先改 UI,再背景發 API
+  const snap = snapshotSlot(datetime);
+  mutateSlot(datetime, { status: makeBlocked ? 'blocked' : 'available' });
+  renderMain();
   try {
     const action = makeBlocked ? 'block' : 'unblock';
     const res = await api.post(action, { admin_key: state.adminKey, datetime });
     if (res.ok) {
       toast(makeBlocked ? '已封鎖' : '已解除封鎖');
-      mutateSlot(datetime, { status: makeBlocked ? 'blocked' : 'available' });
-      renderMain();
     } else {
       toast('失敗:' + humanError(res.error, res.msg), 'error');
-      await refreshCalendar();
+      restoreSlot(datetime, snap);
+      renderMain();
     }
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
+    restoreSlot(datetime, snap);
+    renderMain();
   }
 }
 
@@ -571,18 +601,23 @@ function openBookedMenu(slot, datetime) {
 
 async function adminUnbook(datetime) {
   if (!confirm('確定取消這位學生的預約嗎?\n(該時段會釋放為可選)')) return;
+  // 樂觀更新:先改 UI,再背景發 API
+  const snap = snapshotSlot(datetime);
+  mutateSlot(datetime, { status: 'available', invite_code: '', student_name: '' });
+  renderMain();
   try {
     const res = await api.post('unbook', { admin_key: state.adminKey, datetime });
     if (res.ok) {
       toast('已取消預約');
-      mutateSlot(datetime, { status: 'available', invite_code: '', student_name: '' });
-      renderMain();
     } else {
       toast('失敗:' + humanError(res.error, res.msg), 'error');
-      await refreshCalendar();
+      restoreSlot(datetime, snap);
+      renderMain();
     }
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
+    restoreSlot(datetime, snap);
+    renderMain();
   }
 }
 
@@ -615,26 +650,31 @@ async function doReschedule(fromDt, toDt) {
   const fromLabel = fromDt.replace('T', ' ');
   const toLabel = toDt.replace('T', ' ');
   if (!confirm(`確認改期?\n從:${fromLabel}\n到:${toLabel}`)) return;
-  // 先抓 from slot 的學生資料,reschedule 成功後要原樣搬到 to slot
-  const [fromDate, fromTime] = fromDt.split('T');
-  const fromSlot = state.calendar?.[fromDate]?.find(s => s.time === fromTime);
-  const studentInfo = fromSlot
-    ? { invite_code: fromSlot.invite_code || '', student_name: fromSlot.student_name || '' }
+  // 樂觀更新:from / to 都先改 UI 再背景發 API
+  const fromSnap = snapshotSlot(fromDt);
+  const toSnap = snapshotSlot(toDt);
+  const studentInfo = fromSnap
+    ? { invite_code: fromSnap.invite_code || '', student_name: fromSnap.student_name || '' }
     : { invite_code: '', student_name: '' };
+  mutateSlot(fromDt, { status: 'available', invite_code: '', student_name: '' });
+  mutateSlot(toDt, { status: 'booked', ...studentInfo });
+  cancelReschedule();
+  renderMain();
   try {
     const res = await api.post('reschedule', { admin_key: state.adminKey, from_dt: fromDt, to_dt: toDt });
     if (res.ok) {
       toast('已改期');
-      cancelReschedule();
-      mutateSlot(fromDt, { status: 'available', invite_code: '', student_name: '' });
-      mutateSlot(toDt, { status: 'booked', ...studentInfo });
-      renderMain();
     } else {
       toast('改期失敗:' + humanError(res.error, res.msg), 'error');
-      await refreshCalendar();
+      restoreSlot(fromDt, fromSnap);
+      restoreSlot(toDt, toSnap);
+      renderMain();
     }
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
+    restoreSlot(fromDt, fromSnap);
+    restoreSlot(toDt, toSnap);
+    renderMain();
   }
 }
 
