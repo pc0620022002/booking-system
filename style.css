@@ -167,12 +167,15 @@ code {
   border-radius: 4px;
   vertical-align: middle;
 }
-/* sticky thead — 滾動時日期列固定在頂部 */
+/* sticky thead — 滾動時日期列固定在頂部
+   背景白 + 底部陰影,讓 user 一眼看出「日期列已固定」 */
 .week-table thead th {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: #fafafa;
+  background: #fff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid #e0e0e0;
 }
 .week-table .time-col {
   width: 56px;
@@ -184,7 +187,7 @@ code {
   background: transparent;
 }
 /* sticky 角落 cell 也要 solid 背景才不透視 */
-.week-table thead .time-col { background: #fafafa; }
+.week-table thead .time-col { background: #fff; }
 
 /* 週六日:header 淡藍 + 整欄 cell 極淡藍底 */
 .week-table .date-col.is-weekend { background: #e3f0ff; }
