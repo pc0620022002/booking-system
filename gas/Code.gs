@@ -53,6 +53,8 @@ function route(method, e, body) {
       case 'book':           return book(body.code, body.datetime);
       case 'block':          return setBlocked(body.admin_key, body.datetime, true);
       case 'unblock':        return setBlocked(body.admin_key, body.datetime, false);
+      case 'block_batch':    return setBlockedBatch(body.admin_key, body.datetimes, true);
+      case 'unblock_batch':  return setBlockedBatch(body.admin_key, body.datetimes, false);
       case 'unbook':         return unbook(body.admin_key, body.datetime);
       case 'reschedule':     return reschedule(body.admin_key, body.from_dt, body.to_dt);
       case 'create_student': return createStudent(body.admin_key, body.name, body.email, body.invite_code);
@@ -258,6 +260,45 @@ function setBlocked(key, datetime, blocked) {
       bumpVersion();
       return okResp({ datetime, status: 'available' });
     }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 批次 block / unblock — 連按多格時前端會 debounce 成一次 batch,單 lock 一次處理
+// 避免 N 個並發 POST 排隊等 lock 超過 10s 出 busy_try_again
+function setBlockedBatch(key, datetimes, blocked) {
+  requireAdmin(key);
+  if (!Array.isArray(datetimes) || datetimes.length === 0) return errResp('missing_datetime');
+  if (datetimes.length > 200) return errResp('too_many', 'max 200 slots per batch');
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) return errResp('busy_try_again');
+  try {
+    const { sheet, byIso } = readSlots();
+    const results = [];
+    let changed = 0;
+    datetimes.forEach(dt => {
+      const slot = byIso[dt];
+      if (!slot) { results.push({ datetime: dt, ok: false, error: 'slot_not_found' }); return; }
+      const cur = slot.values[1];
+      if (blocked) {
+        if (cur === 'booked') { results.push({ datetime: dt, ok: false, error: 'slot_booked_cannot_block' }); return; }
+        if (cur === 'blocked') { results.push({ datetime: dt, ok: true, status: 'blocked', noop: true }); return; }
+        sheet.getRange(slot.rowIndex, 2).setValue('blocked');
+        slot.values[1] = 'blocked'; // 同步本地副本,避免同 batch 同 dt 重複出現時誤判
+        changed++;
+        results.push({ datetime: dt, ok: true, status: 'blocked' });
+      } else {
+        if (cur !== 'blocked') { results.push({ datetime: dt, ok: false, error: 'slot_not_blocked' }); return; }
+        sheet.getRange(slot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
+        slot.values[1] = 'available';
+        changed++;
+        results.push({ datetime: dt, ok: true, status: 'available' });
+      }
+    });
+    if (changed > 0) bumpVersion();
+    return okResp({ results, changed });
   } finally {
     lock.releaseLock();
   }
