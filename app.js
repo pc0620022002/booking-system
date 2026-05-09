@@ -256,8 +256,8 @@ document.addEventListener('visibilitychange', async () => {
   }
 });
 
-// 即時同步:每 5s 輕量 ping version,變動才拉整個 calendar
-const POLL_INTERVAL_MS = 5000;
+// 即時同步:每 3s 輕量 ping version,變動才拉整個 calendar
+const POLL_INTERVAL_MS = 3000;
 async function checkVersionAndMaybeRefresh() {
   if (!state.calendar) return;
   if (!state.lastVersion) return;     // server 不支援 version,polling 略過(避免每 5s 全量 refresh)
@@ -514,7 +514,9 @@ function renderWeekTable(weekIndex) {
   const headerRow = el('tr');
   headerRow.appendChild(el('th', { class: 'time-col' }, ''));
   week.days.forEach(d => {
-    headerRow.appendChild(el('th', { class: d.inRange ? 'date-col' : 'date-col date-col-out' },
+    const isWeekend = d.weekday === 0 || d.weekday === 6;
+    const cls = (d.inRange ? 'date-col' : 'date-col date-col-out') + (isWeekend ? ' is-weekend' : '');
+    headerRow.appendChild(el('th', { class: cls },
       el('div', { class: 'wk' }, '週' + WEEKDAYS[d.weekday]),
       el('div', { class: 'date' }, `${d.month}/${d.dayNum}`),
     ));
@@ -533,17 +535,20 @@ function renderWeekTable(weekIndex) {
       const row = el('tr');
       row.appendChild(el('th', { class: 'time-col' }, timeLabel));
       week.days.forEach(d => {
+        const isWeekend = d.weekday === 0 || d.weekday === 6;
         if (!d.inRange) {
-          row.appendChild(el('td', { class: 'slot slot-out-of-range' }));
+          row.appendChild(el('td', { class: 'slot slot-out-of-range' + (isWeekend ? ' is-weekend' : '') }));
           return;
         }
         const slotsForDay = (state.calendar && state.calendar[d.dateKey]) || [];
         const slot = slotsForDay.find(s => s.time === time);
         if (!slot) {
-          row.appendChild(el('td', { class: 'slot slot-out-of-range' }));
+          row.appendChild(el('td', { class: 'slot slot-out-of-range' + (isWeekend ? ' is-weekend' : '') }));
           return;
         }
-        row.appendChild(renderTableCell(slot, d.dateKey, time));
+        const td = renderTableCell(slot, d.dateKey, time);
+        if (isWeekend) td.classList.add('is-weekend');
+        row.appendChild(td);
       });
       tbody.appendChild(row);
     }

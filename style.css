@@ -166,6 +166,13 @@ code {
   border-radius: 4px;
   vertical-align: middle;
 }
+/* sticky thead — 滾動時日期列固定在頂部 */
+.week-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #fafafa;
+}
 .week-table .time-col {
   width: 56px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -175,7 +182,13 @@ code {
   padding-right: 8px;
   background: transparent;
 }
-.week-table thead .time-col { background: transparent; }
+/* sticky 角落 cell 也要 solid 背景才不透視 */
+.week-table thead .time-col { background: #fafafa; }
+
+/* 週六日:header 淡藍 + 整欄 cell 極淡藍底 */
+.week-table .date-col.is-weekend { background: #e3f0ff; }
+.week-table .date-col.is-weekend .wk { color: #1565c0; }
+.week-table td.slot.is-weekend.slot-out-of-range { background: #f5faff; }
 .week-table .date-col {
   text-align: center;
 }
