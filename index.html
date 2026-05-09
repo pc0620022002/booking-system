@@ -5,10 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Andy致安老師課程預約</title>
 <script>
-  // cache-bust:版號用「當前分鐘」,確保 push 完最多 1 分鐘內所有 user 拿新版
-  // 同分鐘內多次 reload 仍會走瀏覽器 cache,不浪費頻寬
+  // cache-bust:版號用「當前 5 秒區間」,push 完最多 5 秒所有 user 自動拿新版
+  // 同 5 秒內 reload 仍走 cache(避免無謂頻寬);但 push 後 user reload 不會再卡
+  // 在「同分鐘內」吃舊版的問題(2026-05-09 race fix 教訓)
   (function() {
-    var v = '?v=' + Math.floor(Date.now() / 60000);
+    var v = '?v=' + Math.floor(Date.now() / 5000);
     document.write('<link rel="stylesheet" href="style.css' + v + '">');
     window.__assetVersion = v;
   })();
