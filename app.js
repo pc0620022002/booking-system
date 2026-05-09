@@ -29,6 +29,7 @@ const state = {
   calendar: null,
   weeks: null,        // [{ days: [{dateKey, inRange, weekday, dayNum, month}, ...] }, ...]
   selectedWeek: null,
+  lastVersion: null,  // 後端 data version,polling 比對是否變動
 };
 
 let rescheduleFromDt = null;
@@ -176,6 +177,7 @@ async function tryLoginStudent(code) {
     state.inviteCode = code;
     state.studentName = res.data.student.name;
     state.calendar = res.data.days;
+    if (res.data.version) state.lastVersion = res.data.version;
     return true;
   } catch (err) {
     console.error('login error', err);
@@ -191,6 +193,7 @@ async function loadAdminCalendar() {
       return false;
     }
     state.calendar = res.data.days;
+    if (res.data.version) state.lastVersion = res.data.version;
     return true;
   } catch (err) {
     alert('API 連線失敗:' + err.message);
@@ -235,18 +238,46 @@ function restoreSlot(datetime, snap) {
   if (idx >= 0) slots[idx] = snap;
 }
 
-// 切回分頁時自動重抓 calendar (cooldown 5s 避免抖動 / 改期模式中跳過)
-let lastVisRefresh = 0;
-document.addEventListener('visibilitychange', () => {
+// 切回分頁時主動同步 (cooldown 5s 避免抖動 / 改期模式中跳過)
+let lastVisCheck = 0;
+document.addEventListener('visibilitychange', async () => {
   if (document.hidden) return;
-  if (!state.calendar) return;        // 還沒登入
-  if (rescheduleFromDt) return;       // 改期中不打斷
-  if (document.querySelector('.modal-overlay')) return; // modal 開著時不打斷
+  if (!state.calendar) return;
+  if (rescheduleFromDt) return;
+  if (document.querySelector('.modal-overlay')) return;
   const now = Date.now();
-  if (now - lastVisRefresh < 5000) return;
-  lastVisRefresh = now;
-  refreshCalendar();
+  if (now - lastVisCheck < 5000) return;
+  lastVisCheck = now;
+  // 若 server 支援 version,走輕量 check;否則 fallback 到完整 refresh(舊版 GAS)
+  if (state.lastVersion) {
+    await checkVersionAndMaybeRefresh();
+  } else {
+    await refreshCalendar();
+  }
 });
+
+// 即時同步:每 5s 輕量 ping version,變動才拉整個 calendar
+const POLL_INTERVAL_MS = 5000;
+async function checkVersionAndMaybeRefresh() {
+  if (!state.calendar) return;
+  if (!state.lastVersion) return;     // server 不支援 version,polling 略過(避免每 5s 全量 refresh)
+  if (rescheduleFromDt) return;
+  if (document.querySelector('.modal-overlay')) return;
+  if (document.hidden) return;
+  try {
+    const res = await api.get('version', {});
+    if (!res.ok) return;
+    const newVer = res.data.version;
+    if (newVer && newVer !== state.lastVersion) {
+      state.lastVersion = newVer;
+      await refreshCalendar();
+    }
+  } catch (err) {
+    // polling 失敗靜默,下一輪再試
+  }
+}
+
+setInterval(checkVersionAndMaybeRefresh, POLL_INTERVAL_MS);
 
 // =========================================================================
 // Render — 部署前提示頁
@@ -495,8 +526,12 @@ function renderWeekTable(weekIndex) {
   for (let h = HOURS_START; h < HOURS_END; h++) {
     for (let m = 0; m < 60; m += SLOT_MINUTES) {
       const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      // 顯示用範圍格式 "09:00-09:30"(end = start + SLOT_MINUTES)
+      const endTotal = h * 60 + m + SLOT_MINUTES;
+      const endTime = `${String(Math.floor(endTotal / 60)).padStart(2, '0')}:${String(endTotal % 60).padStart(2, '0')}`;
+      const timeLabel = `${time}-${endTime}`;
       const row = el('tr');
-      row.appendChild(el('th', { class: 'time-col' }, time));
+      row.appendChild(el('th', { class: 'time-col' }, timeLabel));
       week.days.forEach(d => {
         if (!d.inRange) {
           row.appendChild(el('td', { class: 'slot slot-out-of-range' }));

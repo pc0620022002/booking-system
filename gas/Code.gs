@@ -46,6 +46,7 @@ function route(method, e, body) {
   try {
     switch (action) {
       case 'ping':           return okResp({ pong: true, method, time: new Date().toISOString() });
+      case 'version':        return okResp({ version: getVersion() });
       case 'get_calendar':   return getCalendar(params.code);
       case 'admin_calendar': return adminCalendar(params.admin_key);
       case 'list_students':  return listStudents(params.admin_key);
@@ -90,6 +91,17 @@ function requireAdmin(key) {
   const expected = getAdminKey();
   if (!expected) throw new Error('ADMIN_KEY not configured in Script Properties');
   if (key !== expected) throw new Error('admin_key invalid');
+}
+
+// 版本戳:任何寫入都 bump,client 用 polling 比對版本是否變動,變了才拉整個 calendar
+const VERSION_KEY = 'data_version';
+
+function bumpVersion() {
+  PropertiesService.getScriptProperties().setProperty(VERSION_KEY, String(Date.now()));
+}
+
+function getVersion() {
+  return PropertiesService.getScriptProperties().getProperty(VERSION_KEY) || '0';
 }
 
 // 把 Date 轉成 "yyyy-MM-ddTHH:mm" 字串(以 Asia/Taipei 解讀)
@@ -165,7 +177,7 @@ function getCalendar(code) {
     if (!days[dateKey]) days[dateKey] = [];
     days[dateKey].push({ time, status: view });
   });
-  return okResp({ days, student: { name: student.name, code } });
+  return okResp({ days, student: { name: student.name, code }, version: getVersion() });
 }
 
 function book(code, datetime) {
@@ -191,6 +203,7 @@ function book(code, datetime) {
       student.name,
       new Date(),
     ]]);
+    bumpVersion();
     return okResp({ datetime, status: 'mine', student_name: student.name });
   } finally {
     lock.releaseLock();
@@ -217,7 +230,7 @@ function adminCalendar(key) {
       student_name: r[3] || '',
     });
   });
-  return okResp({ days });
+  return okResp({ days, version: getVersion() });
 }
 
 function setBlocked(key, datetime, blocked) {
@@ -236,10 +249,12 @@ function setBlocked(key, datetime, blocked) {
       if (cur === 'booked') return errResp('slot_booked_cannot_block', '請先 unbook 再 block');
       if (cur === 'blocked') return okResp({ datetime, status: 'blocked', noop: true });
       sheet.getRange(slot.rowIndex, 2).setValue('blocked');
+      bumpVersion();
       return okResp({ datetime, status: 'blocked' });
     } else {
       if (cur !== 'blocked') return errResp('slot_not_blocked', `current: ${cur}`);
       sheet.getRange(slot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
+      bumpVersion();
       return okResp({ datetime, status: 'available' });
     }
   } finally {
@@ -260,6 +275,7 @@ function unbook(key, datetime) {
     if (slot.values[1] !== 'booked') return errResp('slot_not_booked', `current: ${slot.values[1]}`);
 
     sheet.getRange(slot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
+    bumpVersion();
     return okResp({ datetime, status: 'available' });
   } finally {
     lock.releaseLock();
@@ -285,6 +301,7 @@ function reschedule(key, fromDt, toDt) {
     const name = fromSlot.values[3];
     sheet.getRange(toSlot.rowIndex, 2, 1, 4).setValues([['booked', code, name, new Date()]]);
     sheet.getRange(fromSlot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
+    bumpVersion();
     return okResp({ from: fromDt, to: toDt, code, student_name: name });
   } finally {
     lock.releaseLock();
@@ -321,6 +338,7 @@ function createStudent(key, name, email, customCode) {
   }
 
   sheet.appendRow([code, trimmedName, email ? String(email).trim() : '', new Date(), '']);
+  bumpVersion();
   return okResp({ invite_code: code, name: trimmedName, email: email || '' });
 }
 
@@ -338,6 +356,7 @@ function deleteStudent(key, code) {
   for (let i = 0; i < rows.length; i++) {
     if (String(rows[i][0]).trim().toLowerCase() === target) {
       sheet.deleteRow(i + 2);
+      bumpVersion();
       return okResp({ deleted: rows[i][0], name: rows[i][1] });
     }
   }
