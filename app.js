@@ -779,9 +779,29 @@ const blockBatchQueue = {
   DEBOUNCE_MS: 350,
 };
 
+let __batchTrace = '-'; // 最近一次 batch 的結果摘要,顯示在 admin overlay
+
 function blockBatchHasWork() {
   return blockBatchQueue.pending.size > 0 || blockBatchQueue.inFlight || blockBatchQueue.timer != null;
 }
+
+// 老師 admin 模式右下角 debug overlay,顯示 queue 狀態 + 最近 batch 結果
+// 用於診斷「連按部分變未封鎖」這類疑難雜症 — user 連按時看數字就知道哪一層出問題
+function updateBatchOverlay() {
+  if (!state.isAdmin) return;
+  let o = document.getElementById('batch-debug');
+  if (!o) {
+    o = document.createElement('div');
+    o.id = 'batch-debug';
+    o.style.cssText = 'position:fixed;bottom:6px;right:6px;background:rgba(0,0,0,0.75);color:#fff;font-size:10px;padding:4px 8px;border-radius:3px;font-family:ui-monospace,Menlo,monospace;z-index:9999;pointer-events:none;line-height:1.3;';
+    document.body.appendChild(o);
+  }
+  const q = blockBatchQueue.pending.size;
+  const f = blockBatchQueue.inFlight ? 'Y' : 'n';
+  const t = blockBatchQueue.timer != null ? 'Y' : 'n';
+  o.textContent = `${window.__assetVersion || '?'} | q${q} f${f} t${t} | ${__batchTrace}`;
+}
+setInterval(() => { if (state.isAdmin) updateBatchOverlay(); }, 200);
 
 function queueAdminToggleBlock(datetime, makeBlocked) {
   // 已在 queue 內 → 保留最初的 snap(rollback 要回到「user 連按前」的狀態,不是中間狀態)
@@ -837,11 +857,19 @@ async function runBlockBatch(items) {
   const tasks = [];
   if (blockDts.length) tasks.push(sendBlockBatch(blockDts, true));
   if (unblockDts.length) tasks.push(sendBlockBatch(unblockDts, false));
-  if (tasks.length === 0) return;
+  if (tasks.length === 0) { __batchTrace = '(no-op)'; updateBatchOverlay(); return; }
 
+  const t0 = Date.now();
+  __batchTrace = `送出 ${blockDts.length}b/${unblockDts.length}u...`;
+  updateBatchOverlay();
   const allResults = (await Promise.all(tasks)).flat();
+  const elapsed = Date.now() - t0;
   const failures = allResults.filter(r => !r.ok);
   const successCount = allResults.length - failures.length;
+  __batchTrace = failures.length
+    ? `${successCount}OK ${failures.length}FAIL [${failures[0].error}] ${elapsed}ms`
+    : `${successCount}OK ${elapsed}ms`;
+  updateBatchOverlay();
 
   if (failures.length) {
     failures.forEach(f => {
