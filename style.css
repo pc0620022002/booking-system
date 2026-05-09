@@ -211,6 +211,23 @@ code {
 .week-table .date-col-out .wk,
 .week-table .date-col-out .date { color: #ccc; }
 
+/* 老師端「封鎖整天」按鈕 */
+.week-table .day-block-btn {
+  display: block;
+  margin: 4px auto 0;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1.2;
+  background: #fff8e1;
+  color: #b87900;
+  border: 1px solid #ffd24d;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.week-table .day-block-btn:hover { background: #ffefb3; }
+.week-table .day-block-btn:active { transform: translateY(1px); }
+
 .week-table td.slot {
   padding: 6px 4px;
   height: 44px;
@@ -306,6 +323,7 @@ body.reschedule-mode .week-table td.slot-available {
   .week-table .time-col .time-sep { display: none; }
   .week-table .date-col .wk { font-size: 10px; }
   .week-table .date-col .date { font-size: 12px; }
+  .week-table .day-block-btn { font-size: 9px; padding: 1px 3px; margin-top: 2px; }
   .week-table td.slot {
     height: 40px;
     padding: 4px 2px;

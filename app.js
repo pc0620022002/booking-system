@@ -105,6 +105,8 @@ function humanError(code, msg) {
     'slot_taken': '此時段已被其他學生預約或老師封鎖',
     'invalid_code': '邀請碼無效',
     'busy_try_again': '系統忙碌,請稍後再試',
+    'too_many': '一次操作的時段太多,請分批',
+    'network_error': '連線失敗',
     'slot_not_found': '時段不存在',
     'slot_booked_cannot_block': '此時段已有學生預約,請先取消預約再封鎖',
     'slot_not_blocked': '此時段並非封鎖狀態',
@@ -634,10 +636,26 @@ function renderWeekTable(weekIndex) {
   week.days.forEach(d => {
     const isWeekend = d.weekday === 0 || d.weekday === 6;
     const cls = (d.inRange ? 'date-col' : 'date-col date-col-out') + (isWeekend ? ' is-weekend' : '');
-    headerRow.appendChild(el('th', { class: cls },
+    const children = [
       el('div', { class: 'wk' }, '週' + WEEKDAYS[d.weekday]),
       el('div', { class: 'date' }, `${d.month}/${d.dayNum}`),
-    ));
+    ];
+    // 老師模式:加「封鎖整天 / 解除整天」按鈕
+    if (state.isAdmin && d.inRange) {
+      const slots = (state.calendar && state.calendar[d.dateKey]) || [];
+      const hasAvailable = slots.some(s => s.status === 'available');
+      const hasBlocked = slots.some(s => s.status === 'blocked');
+      let label, title;
+      if (hasAvailable) { label = '⛔ 整天'; title = '封鎖此日全部可用時段'; }
+      else if (hasBlocked) { label = '↺ 整天'; title = '解除此日全部封鎖'; }
+      else { label = '— 整天'; title = '此日全部已預約'; }
+      children.push(el('button', {
+        class: 'day-block-btn',
+        title,
+        onclick: e => { e.stopPropagation(); onBlockWholeDay(d.dateKey); },
+      }, label));
+    }
+    headerRow.appendChild(el('th', { class: cls }, ...children));
   });
   thead.appendChild(headerRow);
   table.appendChild(thead);
@@ -742,30 +760,138 @@ async function onAdminSlotClick(slot, datetime) {
     return;
   }
 
-  if (slot.status === 'available') await adminToggleBlock(datetime, true);
-  else if (slot.status === 'blocked') await adminToggleBlock(datetime, false);
+  if (slot.status === 'available') queueAdminToggleBlock(datetime, true);
+  else if (slot.status === 'blocked') queueAdminToggleBlock(datetime, false);
   else if (slot.status === 'booked') openBookedMenu(slot, datetime);
 }
 
-async function adminToggleBlock(datetime, makeBlocked) {
-  // 樂觀更新:先改 UI,再背景發 API
-  const snap = snapshotSlot(datetime);
+// =========================================================================
+// 老師 — block / unblock 批次 debounce queue
+// 連按多格時累積 350ms 再一次性發 batch,避免 N 個並發 POST 排隊等 GAS lock 超過 10s 出 busy_try_again
+// =========================================================================
+const blockBatchQueue = {
+  pending: new Map(), // datetime -> { action: 'block'|'unblock', snap }
+  timer: null,
+  DEBOUNCE_MS: 350,
+};
+
+function queueAdminToggleBlock(datetime, makeBlocked) {
+  // 已在 queue 內 → 保留最初的 snap(rollback 要回到「user 連按前」的狀態,不是中間狀態)
+  const existing = blockBatchQueue.pending.get(datetime);
+  const snap = existing ? existing.snap : snapshotSlot(datetime);
+  // 樂觀 UI:立刻變色
   mutateSlot(datetime, { status: makeBlocked ? 'blocked' : 'available' });
   renderMain();
-  try {
-    const action = makeBlocked ? 'block' : 'unblock';
-    const res = await api.post(action, { admin_key: state.adminKey, datetime });
-    if (res.ok) {
-      toast(makeBlocked ? '已封鎖' : '已解除封鎖');
-    } else {
-      toast('失敗:' + humanError(res.error, res.msg), 'error');
-      restoreSlot(datetime, snap);
-      renderMain();
-    }
-  } catch (err) {
-    toast('連線失敗:' + err.message, 'error');
-    restoreSlot(datetime, snap);
+  blockBatchQueue.pending.set(datetime, {
+    action: makeBlocked ? 'block' : 'unblock',
+    snap,
+  });
+  if (blockBatchQueue.timer) clearTimeout(blockBatchQueue.timer);
+  blockBatchQueue.timer = setTimeout(flushBlockBatch, blockBatchQueue.DEBOUNCE_MS);
+}
+
+async function flushBlockBatch() {
+  blockBatchQueue.timer = null;
+  const items = Array.from(blockBatchQueue.pending.entries());
+  blockBatchQueue.pending = new Map();
+  if (items.length === 0) return;
+
+  const blockDts = [];
+  const unblockDts = [];
+  const snaps = new Map();
+  items.forEach(([dt, { action, snap }]) => {
+    snaps.set(dt, snap);
+    // user 點到回原狀(block → unblock)→ 不發 request
+    const initialStatus = snap ? snap.status : 'available';
+    const finalStatus = action === 'block' ? 'blocked' : 'available';
+    if (initialStatus === finalStatus) return;
+    if (action === 'block') blockDts.push(dt);
+    else unblockDts.push(dt);
+  });
+
+  const tasks = [];
+  if (blockDts.length) tasks.push(sendBlockBatch(blockDts, true));
+  if (unblockDts.length) tasks.push(sendBlockBatch(unblockDts, false));
+  if (tasks.length === 0) return;
+
+  const allResults = (await Promise.all(tasks)).flat();
+  const failures = allResults.filter(r => !r.ok);
+  const successCount = allResults.length - failures.length;
+
+  if (failures.length) {
+    failures.forEach(f => {
+      const snap = snaps.get(f.datetime);
+      if (snap) restoreSlot(f.datetime, snap);
+    });
     renderMain();
+    if (failures.length === 1) {
+      toast('1 個時段失敗:' + humanError(failures[0].error), 'error');
+    } else {
+      // 顯示第一個 error code 提供 hint(常見:slot_booked_cannot_block)
+      toast(`${failures.length} 個時段失敗(已回滾):${humanError(failures[0].error)}`, 'error');
+    }
+  }
+  if (successCount > 0 && failures.length === 0) {
+    if (successCount === 1) toast('已更新');
+    else toast(`已更新 ${successCount} 個時段`);
+  } else if (successCount > 0 && failures.length > 0) {
+    // 部分成功,toast 已在 failure 分支顯示;這邊不再重複
+  }
+}
+
+async function sendBlockBatch(datetimes, makeBlocked) {
+  try {
+    const action = makeBlocked ? 'block_batch' : 'unblock_batch';
+    const res = await api.post(action, { admin_key: state.adminKey, datetimes });
+    if (!res.ok) {
+      // 後端尚未部署新版(舊版不認 batch action)→ fallback 到逐格 sequential 發
+      // 這樣即使 GAS 端還沒重新部署,連按多格也不會整批失敗,只是會慢一點(N × ~1-2s)
+      if (res.error === 'unknown_action') {
+        return await sendBlockSequentialFallback(datetimes, makeBlocked);
+      }
+      return datetimes.map(dt => ({ datetime: dt, ok: false, error: res.error || 'unknown' }));
+    }
+    return res.data.results || [];
+  } catch (err) {
+    return datetimes.map(dt => ({ datetime: dt, ok: false, error: 'network_error' }));
+  }
+}
+
+async function sendBlockSequentialFallback(datetimes, makeBlocked) {
+  const action = makeBlocked ? 'block' : 'unblock';
+  const out = [];
+  for (const dt of datetimes) {
+    try {
+      const res = await api.post(action, { admin_key: state.adminKey, datetime: dt });
+      if (res.ok) out.push({ datetime: dt, ok: true, status: makeBlocked ? 'blocked' : 'available' });
+      else out.push({ datetime: dt, ok: false, error: res.error || 'unknown' });
+    } catch (err) {
+      out.push({ datetime: dt, ok: false, error: 'network_error' });
+    }
+  }
+  return out;
+}
+
+// 「封鎖整天 / 解除整天封鎖」— 點日期 header 旁的按鈕觸發
+function onBlockWholeDay(dateKey) {
+  if (!state.isAdmin) return;
+  if (rescheduleFromDt) { toast('改期模式進行中,請先取消', 'error'); return; }
+  const slots = (state.calendar && state.calendar[dateKey]) || [];
+  const availables = slots.filter(s => s.status === 'available');
+  const blockeds = slots.filter(s => s.status === 'blocked');
+  const bookeds = slots.filter(s => s.status === 'booked');
+  const dateLabel = formatDateLabel(dateKey);
+
+  if (availables.length > 0) {
+    let msg = `確定把 ${dateLabel} 全天封鎖嗎?\n\n將封鎖 ${availables.length} 個可用時段`;
+    if (bookeds.length > 0) msg += `\n(${bookeds.length} 個已預約時段不受影響)`;
+    if (!confirm(msg)) return;
+    availables.forEach(s => queueAdminToggleBlock(`${dateKey}T${s.time}`, true));
+  } else if (blockeds.length > 0) {
+    if (!confirm(`確定解除 ${dateLabel} 全天封鎖嗎?\n\n將解除 ${blockeds.length} 個封鎖時段`)) return;
+    blockeds.forEach(s => queueAdminToggleBlock(`${dateKey}T${s.time}`, false));
+  } else {
+    toast('此日全部已預約,沒有可封鎖的時段', 'info');
   }
 }
 
@@ -1258,7 +1384,8 @@ function saveMockState() {
 }
 
 const MOCK_MUTATING_ACTIONS = new Set([
-  'book', 'block', 'unblock', 'unbook', 'reschedule', 'create_student', 'delete_student',
+  'book', 'block', 'unblock', 'block_batch', 'unblock_batch',
+  'unbook', 'reschedule', 'create_student', 'delete_student',
 ]);
 
 function installMockApi() {
@@ -1284,6 +1411,8 @@ function mockHandle(action, params, body) {
     case 'book':           return mockBook(body.code, body.datetime);
     case 'block':          return mockSetBlocked(body.admin_key, body.datetime, true);
     case 'unblock':        return mockSetBlocked(body.admin_key, body.datetime, false);
+    case 'block_batch':    return mockSetBlockedBatch(body.admin_key, body.datetimes, true);
+    case 'unblock_batch':  return mockSetBlockedBatch(body.admin_key, body.datetimes, false);
     case 'unbook':         return mockUnbook(body.admin_key, body.datetime);
     case 'reschedule':     return mockReschedule(body.admin_key, body.from_dt, body.to_dt);
     case 'create_student': return mockCreateStudent(body.admin_key, body.name, body.email, body.invite_code);
@@ -1374,6 +1503,29 @@ function mockSetBlocked(adminKey, datetime, makeBlocked) {
   if (!slot || slot.status !== 'blocked') return { ok: false, error: 'slot_not_blocked' };
   delete mockData.slots[datetime];
   return { ok: true, data: { datetime, status: 'available' } };
+}
+
+function mockSetBlockedBatch(adminKey, datetimes, blocked) {
+  if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
+  if (!Array.isArray(datetimes) || datetimes.length === 0) return { ok: false, error: 'missing_datetime' };
+  const results = [];
+  let changed = 0;
+  datetimes.forEach(dt => {
+    const slot = mockData.slots[dt];
+    if (blocked) {
+      if (slot && slot.status === 'booked') { results.push({ datetime: dt, ok: false, error: 'slot_booked_cannot_block' }); return; }
+      if (slot && slot.status === 'blocked') { results.push({ datetime: dt, ok: true, status: 'blocked', noop: true }); return; }
+      mockData.slots[dt] = { status: 'blocked' };
+      changed++;
+      results.push({ datetime: dt, ok: true, status: 'blocked' });
+    } else {
+      if (!slot || slot.status !== 'blocked') { results.push({ datetime: dt, ok: false, error: 'slot_not_blocked' }); return; }
+      delete mockData.slots[dt];
+      changed++;
+      results.push({ datetime: dt, ok: true, status: 'available' });
+    }
+  });
+  return { ok: true, data: { results, changed } };
 }
 
 function mockUnbook(adminKey, datetime) {
