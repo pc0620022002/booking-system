@@ -149,7 +149,8 @@ code {
   border-radius: 8px;
   padding: 12px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-  overflow-x: auto;
+  /* 不能設 overflow-x:auto — 會讓 wrap 變 scroll container,sticky thead 就只 sticky 在 wrap 內。
+     窄螢幕想水平 scroll 時改在 body 層級捲。 */
 }
 .week-table {
   width: 100%;
