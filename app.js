@@ -192,6 +192,16 @@ async function refreshCalendar() {
   if (rescheduleFromDt) showRescheduleBanner();
 }
 
+// 樂觀更新:就地改 state.calendar 內對應 slot 的欄位,免去重抓整張 calendar
+function mutateSlot(datetime, fields) {
+  if (!state.calendar) return;
+  const [dateKey, time] = datetime.split('T');
+  const slots = state.calendar[dateKey];
+  if (!slots) return;
+  const slot = slots.find(s => s.time === time);
+  if (slot) Object.assign(slot, fields);
+}
+
 // =========================================================================
 // Render — 部署前提示頁
 // =========================================================================
@@ -489,12 +499,17 @@ async function onStudentBook(datetime, time) {
   if (!confirm(`確定預約 ${dateLabel} ${time} 嗎?\n\n預約後無法自行取消,需聯絡老師。`)) return;
   try {
     const res = await api.post('book', { code: state.inviteCode, datetime });
-    if (res.ok) toast('預約成功');
-    else toast('預約失敗:' + humanError(res.error, res.msg), 'error');
+    if (res.ok) {
+      toast('預約成功');
+      mutateSlot(datetime, { status: 'mine' });
+      renderMain();
+    } else {
+      toast('預約失敗:' + humanError(res.error, res.msg), 'error');
+      await refreshCalendar();
+    }
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
   }
-  await refreshCalendar();
 }
 
 // =========================================================================
@@ -519,12 +534,17 @@ async function adminToggleBlock(datetime, makeBlocked) {
   try {
     const action = makeBlocked ? 'block' : 'unblock';
     const res = await api.post(action, { admin_key: state.adminKey, datetime });
-    if (res.ok) toast(makeBlocked ? '已封鎖' : '已解除封鎖');
-    else toast('失敗:' + humanError(res.error, res.msg), 'error');
+    if (res.ok) {
+      toast(makeBlocked ? '已封鎖' : '已解除封鎖');
+      mutateSlot(datetime, { status: makeBlocked ? 'blocked' : 'available' });
+      renderMain();
+    } else {
+      toast('失敗:' + humanError(res.error, res.msg), 'error');
+      await refreshCalendar();
+    }
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
   }
-  await refreshCalendar();
 }
 
 function openBookedMenu(slot, datetime) {
@@ -553,12 +573,17 @@ async function adminUnbook(datetime) {
   if (!confirm('確定取消這位學生的預約嗎?\n(該時段會釋放為可選)')) return;
   try {
     const res = await api.post('unbook', { admin_key: state.adminKey, datetime });
-    if (res.ok) toast('已取消預約');
-    else toast('失敗:' + humanError(res.error, res.msg), 'error');
+    if (res.ok) {
+      toast('已取消預約');
+      mutateSlot(datetime, { status: 'available', invite_code: '', student_name: '' });
+      renderMain();
+    } else {
+      toast('失敗:' + humanError(res.error, res.msg), 'error');
+      await refreshCalendar();
+    }
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
   }
-  await refreshCalendar();
 }
 
 function startReschedule(fromDt, slot) {
@@ -590,14 +615,27 @@ async function doReschedule(fromDt, toDt) {
   const fromLabel = fromDt.replace('T', ' ');
   const toLabel = toDt.replace('T', ' ');
   if (!confirm(`確認改期?\n從:${fromLabel}\n到:${toLabel}`)) return;
+  // 先抓 from slot 的學生資料,reschedule 成功後要原樣搬到 to slot
+  const [fromDate, fromTime] = fromDt.split('T');
+  const fromSlot = state.calendar?.[fromDate]?.find(s => s.time === fromTime);
+  const studentInfo = fromSlot
+    ? { invite_code: fromSlot.invite_code || '', student_name: fromSlot.student_name || '' }
+    : { invite_code: '', student_name: '' };
   try {
     const res = await api.post('reschedule', { admin_key: state.adminKey, from_dt: fromDt, to_dt: toDt });
-    if (res.ok) { toast('已改期'); cancelReschedule(); }
-    else toast('改期失敗:' + humanError(res.error, res.msg), 'error');
+    if (res.ok) {
+      toast('已改期');
+      cancelReschedule();
+      mutateSlot(fromDt, { status: 'available', invite_code: '', student_name: '' });
+      mutateSlot(toDt, { status: 'booked', ...studentInfo });
+      renderMain();
+    } else {
+      toast('改期失敗:' + humanError(res.error, res.msg), 'error');
+      await refreshCalendar();
+    }
   } catch (err) {
     toast('連線失敗:' + err.message, 'error');
   }
-  await refreshCalendar();
 }
 
 // =========================================================================
