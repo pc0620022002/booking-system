@@ -38,9 +38,16 @@ let rescheduleFromDt = null;
 // localStorage
 // =========================================================================
 const storage = {
-  getInviteCode() { return localStorage.getItem('booking_invite_code') || ''; },
-  setInviteCode(code) { localStorage.setItem('booking_invite_code', code); },
-  clearInviteCode() { localStorage.removeItem('booking_invite_code'); },
+  // 邀請碼用 sessionStorage:關分頁就清空,共用瀏覽器下一個學生打開會看到登入框,不會誤用前一人帳號
+  // 同時清掉舊的 localStorage 殘留(過渡:之前是用 localStorage)
+  getInviteCode() {
+    const stale = localStorage.getItem('booking_invite_code');
+    if (stale) localStorage.removeItem('booking_invite_code');
+    return sessionStorage.getItem('booking_invite_code') || '';
+  },
+  setInviteCode(code) { sessionStorage.setItem('booking_invite_code', code); },
+  clearInviteCode() { sessionStorage.removeItem('booking_invite_code'); },
+  // 老師端「預約紀錄」未讀標記:跨 session 保留沒問題,維持 localStorage
   getLastSeenBookedAt() { return localStorage.getItem('booking_last_seen_at') || ''; },
   setLastSeenBookedAt(iso) { localStorage.setItem('booking_last_seen_at', iso); },
 };
