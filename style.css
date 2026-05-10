@@ -102,6 +102,57 @@ code {
 }
 .btn-link:hover { text-decoration: underline; }
 
+/* === 學生身份 banner(防止共用瀏覽器誤用前一人帳號)=== */
+.identity-banner {
+  background: #fff8e1;
+  border: 1px solid #ffd24d;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.identity-banner .identity-text {
+  font-size: 14px;
+  color: #5d4500;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.identity-banner .identity-icon { font-size: 16px; }
+.identity-banner strong { color: #b87900; font-size: 15px; }
+.identity-banner .identity-code { font-size: 12px; color: #8a6800; }
+.identity-banner code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+.identity-switch {
+  background: #fff;
+  border: 1px solid #ffb84d;
+  color: #b87900;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.identity-switch:hover { background: #fff3cc; }
+.identity-switch:active { transform: translateY(1px); }
+@media (max-width: 560px) {
+  .identity-banner { padding: 8px 10px; gap: 6px; }
+  .identity-banner .identity-text { font-size: 13px; }
+  .identity-banner strong { font-size: 14px; }
+  .identity-switch { font-size: 12px; padding: 4px 10px; }
+}
+
 /* === Header === */
 .header {
   display: flex;

@@ -377,6 +377,8 @@ function renderMain() {
   if (!state.weeks) state.weeks = computeWeeks(RANGE_START, RANGE_END);
   if (state.selectedWeek == null) state.selectedWeek = defaultWeekIndex();
 
+  const idBanner = renderIdentityBanner();
+  if (idBanner) app.appendChild(idBanner);
   app.appendChild(renderHeader());
   app.appendChild(renderWeekNav());
 
@@ -384,6 +386,23 @@ function renderMain() {
   wrap.appendChild(renderWeekTable(state.selectedWeek));
   app.appendChild(wrap);
   attachSwipe(wrap);
+}
+
+// 學生模式:在主畫面頂部顯示醒目的身份 banner,讓共用瀏覽器的學生一眼看到自己用誰的帳號
+// 沒登出就關掉時,下一個學生打開會自動 auto-login 為前一人 → 這個 banner 是防誤用的關鍵
+function renderIdentityBanner() {
+  if (state.isAdmin) return null;
+  if (!state.studentName) return null;
+  return el('div', { class: 'identity-banner' },
+    el('div', { class: 'identity-text' },
+      el('span', { class: 'identity-icon' }, '👤'),
+      el('span', {}, '目前以 '),
+      el('strong', {}, state.studentName),
+      el('span', {}, ' 身份登入'),
+      el('span', { class: 'identity-code' }, '(邀請碼:', el('code', {}, state.inviteCode), ')'),
+    ),
+    el('button', { class: 'identity-switch', onclick: doLogout }, '不是你?切換帳號'),
+  );
 }
 
 function renderHeader() {
