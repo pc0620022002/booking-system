@@ -753,7 +753,9 @@ function renderTableCell(slot, dateKey, time) {
 // 學生 — 預約
 // =========================================================================
 async function onStudentBook(datetime, time) {
-  if (swipeMoved) return;
+  // 只在「正在 swipe 中」(swipeStart 還沒清掉)才 gate;touch 結束就重設,避免吃掉後續 click
+  if (swipeMoved && swipeStart) return;
+  swipeMoved = false;
   const dateKey = datetime.split('T')[0];
   const [y, mo, d] = dateKey.split('-').map(Number);
   const wk = WEEKDAYS[new Date(y, mo - 1, d).getDay()];
@@ -788,7 +790,8 @@ async function onStudentBook(datetime, time) {
 // 老師 — slot 點擊路由
 // =========================================================================
 async function onAdminSlotClick(slot, datetime) {
-  if (swipeMoved) return;
+  if (swipeMoved && swipeStart) return;
+  swipeMoved = false;
 
   if (rescheduleFromDt) {
     if (rescheduleFromDt === datetime) { cancelReschedule(); return; }
@@ -820,8 +823,32 @@ let __batchTrace = '-'; // 最近一次 batch 的結果摘要,顯示在 admin ov
 let __mutationInFlight = 0;
 async function withMutationGuard(fn) {
   __mutationInFlight++;
+  showMutationIndicator();
+  // 5 秒還沒回應就改文案告訴 user「server 慢」(GAS Web App cold start 可達 30+ 秒,
+  // 不提示 user 會以為「沒反應」)
+  const slowTimer = setTimeout(() => {
+    const el = document.getElementById('mut-indicator');
+    if (el) el.textContent = '⏳ Server 回應較慢,請稍候...(首次喚醒可能 30 秒)';
+  }, 5000);
   try { return await fn(); }
-  finally { __mutationInFlight--; }
+  finally {
+    clearTimeout(slowTimer);
+    __mutationInFlight--;
+    if (__mutationInFlight === 0) hideMutationIndicator();
+  }
+}
+
+function showMutationIndicator() {
+  if (document.getElementById('mut-indicator')) return;
+  const el = document.createElement('div');
+  el.id = 'mut-indicator';
+  el.className = 'mut-indicator';
+  el.textContent = '⏳ 處理中...';
+  document.body.appendChild(el);
+}
+function hideMutationIndicator() {
+  const el = document.getElementById('mut-indicator');
+  if (el) el.remove();
 }
 
 function blockBatchHasWork() {

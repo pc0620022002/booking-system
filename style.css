@@ -102,6 +102,33 @@ code {
 }
 .btn-link:hover { text-decoration: underline; }
 
+/* === Mutation 處理中指示(讓 user 知道在等 server,不是壞了)=== */
+.mut-indicator {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1976d2;
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 20px;
+  font-size: 14px;
+  z-index: 9999;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  animation: mut-pulse 1.5s infinite;
+  white-space: nowrap;
+  max-width: 92vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes mut-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+@media (max-width: 560px) {
+  .mut-indicator { font-size: 12px; padding: 6px 14px; top: 8px; }
+}
+
 /* === 學生身份 banner(防止共用瀏覽器誤用前一人帳號)=== */
 .identity-banner {
   background: #fff8e1;
