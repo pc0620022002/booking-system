@@ -728,8 +728,13 @@ function renderTableCell(slot, dateKey, time) {
 async function onStudentBook(datetime, time) {
   if (swipeMoved) return;
   const dateKey = datetime.split('T')[0];
-  const dateLabel = formatDateLabel(dateKey);
-  if (!confirm(`確定預約 ${dateLabel} ${time} 嗎?\n\n預約後無法自行取消,需聯絡老師。`)) return;
+  const [y, mo, d] = dateKey.split('-').map(Number);
+  const wk = WEEKDAYS[new Date(y, mo - 1, d).getDay()];
+  const [h, m] = time.split(':').map(Number);
+  const endTotal = h * 60 + m + SLOT_MINUTES;
+  const endTime = `${String(Math.floor(endTotal / 60)).padStart(2, '0')}:${String(endTotal % 60).padStart(2, '0')}`;
+  const dateLabel = `${y}年${mo}月${d}日(週${wk})`;
+  if (!confirm(`確定預約${dateLabel}${time}-${endTime}嗎?\n\n預約後無法自行取消,需聯絡老師。`)) return;
   // 樂觀更新:先改 UI,再背景發 API
   const snap = snapshotSlot(datetime);
   mutateSlot(datetime, { status: 'mine' });
