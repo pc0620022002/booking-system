@@ -256,7 +256,7 @@ document.addEventListener('visibilitychange', async () => {
   if (!state.calendar) return;
   if (rescheduleFromDt) return;
   if (document.querySelector('.modal-overlay')) return;
-  if (state.isAdmin && typeof blockBatchHasWork === 'function' && blockBatchHasWork()) return;
+  if (typeof hasInFlightWork === 'function' && hasInFlightWork()) return;
   const now = Date.now();
   if (now - lastVisCheck < 5000) return;
   lastVisCheck = now;
@@ -276,8 +276,9 @@ async function checkVersionAndMaybeRefresh() {
   if (rescheduleFromDt) return;
   if (document.querySelector('.modal-overlay')) return;
   if (document.hidden) return;
-  // 老師 batch 還沒跑完前不 refresh,避免 server 視角覆寫 user 還在累積的 optimistic state
-  if (state.isAdmin && typeof blockBatchHasWork === 'function' && blockBatchHasWork()) return;
+  // 任何寫入(student book / admin batch / unbook / reschedule / 邀請碼增刪)在飛期間 skip
+  // 避免 polling 拉到 sheet flush 跟寫入的 race window 中的 stale 資料
+  if (typeof hasInFlightWork === 'function' && hasInFlightWork()) return;
   try {
     const res = await api.get('version', {});
     if (!res.ok) return;
@@ -765,20 +766,22 @@ async function onStudentBook(datetime, time) {
   const snap = snapshotSlot(datetime);
   mutateSlot(datetime, { status: 'mine' });
   renderMain();
-  try {
-    const res = await api.post('book', { code: state.inviteCode, datetime });
-    if (res.ok) {
-      toast('預約成功');
-    } else {
-      toast('預約失敗:' + humanError(res.error, res.msg), 'error');
+  await withMutationGuard(async () => {
+    try {
+      const res = await api.post('book', { code: state.inviteCode, datetime });
+      if (res.ok) {
+        toast('預約成功');
+      } else {
+        toast('預約失敗:' + humanError(res.error, res.msg), 'error');
+        restoreSlot(datetime, snap);
+        renderMain();
+      }
+    } catch (err) {
+      toast('連線失敗:' + err.message, 'error');
       restoreSlot(datetime, snap);
       renderMain();
     }
-  } catch (err) {
-    toast('連線失敗:' + err.message, 'error');
-    restoreSlot(datetime, snap);
-    renderMain();
-  }
+  });
 }
 
 // =========================================================================
@@ -812,8 +815,21 @@ const blockBatchQueue = {
 
 let __batchTrace = '-'; // 最近一次 batch 的結果摘要,顯示在 admin overlay
 
+// 全域 mutation counter:任何 client 發起的寫入(student book / admin unbook / reschedule / createStudent / deleteStudent)在飛期間 polling 必須 skip,避免拉到 sheet 還沒 flush 的 stale 狀態
+// + 把 state.lastVersion 對齊到 server 新版本 → 後續 polling 不再 refresh → 「不會自動回復」
+let __mutationInFlight = 0;
+async function withMutationGuard(fn) {
+  __mutationInFlight++;
+  try { return await fn(); }
+  finally { __mutationInFlight--; }
+}
+
 function blockBatchHasWork() {
   return blockBatchQueue.pending.size > 0 || blockBatchQueue.inFlight || blockBatchQueue.timer != null;
+}
+
+function hasInFlightWork() {
+  return __mutationInFlight > 0 || blockBatchHasWork();
 }
 
 // 老師 admin 模式右下角 debug overlay,顯示 queue 狀態 + 最近 batch 結果
@@ -1007,20 +1023,22 @@ async function adminUnbook(datetime) {
   const snap = snapshotSlot(datetime);
   mutateSlot(datetime, { status: 'available', invite_code: '', student_name: '' });
   renderMain();
-  try {
-    const res = await api.post('unbook', { admin_key: state.adminKey, datetime });
-    if (res.ok) {
-      toast('已取消預約');
-    } else {
-      toast('失敗:' + humanError(res.error, res.msg), 'error');
+  await withMutationGuard(async () => {
+    try {
+      const res = await api.post('unbook', { admin_key: state.adminKey, datetime });
+      if (res.ok) {
+        toast('已取消預約');
+      } else {
+        toast('失敗:' + humanError(res.error, res.msg), 'error');
+        restoreSlot(datetime, snap);
+        renderMain();
+      }
+    } catch (err) {
+      toast('連線失敗:' + err.message, 'error');
       restoreSlot(datetime, snap);
       renderMain();
     }
-  } catch (err) {
-    toast('連線失敗:' + err.message, 'error');
-    restoreSlot(datetime, snap);
-    renderMain();
-  }
+  });
 }
 
 function startReschedule(fromDt, slot) {
@@ -1062,22 +1080,24 @@ async function doReschedule(fromDt, toDt) {
   mutateSlot(toDt, { status: 'booked', ...studentInfo });
   cancelReschedule();
   renderMain();
-  try {
-    const res = await api.post('reschedule', { admin_key: state.adminKey, from_dt: fromDt, to_dt: toDt });
-    if (res.ok) {
-      toast('已改期');
-    } else {
-      toast('改期失敗:' + humanError(res.error, res.msg), 'error');
+  await withMutationGuard(async () => {
+    try {
+      const res = await api.post('reschedule', { admin_key: state.adminKey, from_dt: fromDt, to_dt: toDt });
+      if (res.ok) {
+        toast('已改期');
+      } else {
+        toast('改期失敗:' + humanError(res.error, res.msg), 'error');
+        restoreSlot(fromDt, fromSnap);
+        restoreSlot(toDt, toSnap);
+        renderMain();
+      }
+    } catch (err) {
+      toast('連線失敗:' + err.message, 'error');
       restoreSlot(fromDt, fromSnap);
       restoreSlot(toDt, toSnap);
       renderMain();
     }
-  } catch (err) {
-    toast('連線失敗:' + err.message, 'error');
-    restoreSlot(fromDt, fromSnap);
-    restoreSlot(toDt, toSnap);
-    renderMain();
-  }
+  });
 }
 
 // =========================================================================
