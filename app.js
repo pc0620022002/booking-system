@@ -445,11 +445,12 @@ function buildRecentBookingsBtn() {
 // 收集所有 booked slots 並按 booked_at desc 排序(只回有 booked_at 的)
 function collectRecentBookings() {
   if (!state.calendar) return [];
-  const list = [];
+  // 1. 攤平所有 booked slot
+  const flat = [];
   Object.entries(state.calendar).forEach(([dateKey, slots]) => {
     slots.forEach(s => {
       if (s.status === 'booked' && s.booked_at) {
-        list.push({
+        flat.push({
           datetime: `${dateKey}T${s.time}`,
           dateKey,
           time: s.time,
@@ -460,8 +461,38 @@ function collectRecentBookings() {
       }
     });
   });
-  list.sort((a, b) => b.booked_at.localeCompare(a.booked_at));
-  return list;
+  // 2. 按 invite_code + dateKey group(每組同學生同天)
+  const groupMap = new Map();
+  flat.forEach(b => {
+    const k = `${b.invite_code}|${b.dateKey}`;
+    if (!groupMap.has(k)) groupMap.set(k, []);
+    groupMap.get(k).push(b);
+  });
+  // 3. 各組跑 mergeConsecutive,把連續半小時時段合併成一段(09:30-10:00 + 10:00-10:30 → 09:30-10:30)
+  const out = [];
+  groupMap.forEach(group => {
+    const merged = mergeConsecutive(group);
+    merged.forEach(m => {
+      // 段落代表時間用該段內各格子最晚的 booked_at(最後一次 click 預約的時間)
+      const inRange = group.filter(b => {
+        const startMin = timeToMinutes(b.time);
+        return startMin >= m.startMin && startMin < m.endMin;
+      });
+      const repBookedAt = inRange.reduce((max, b) => (b.booked_at > max ? b.booked_at : max), '');
+      out.push({
+        dateKey: m.dateKey,
+        startTime: m.startTime,
+        endTime: m.endTime,
+        datetime: m.datetime,
+        student_name: m.student_name,
+        invite_code: m.invite_code,
+        booked_at: repBookedAt,
+      });
+    });
+  });
+  // 4. 按段落最晚 booked_at desc 排序
+  out.sort((a, b) => b.booked_at.localeCompare(a.booked_at));
+  return out;
 }
 
 function relativeTime(isoStr) {
@@ -503,10 +534,7 @@ function openRecentBookings() {
     list.slice(0, 50).forEach(b => {
       const isUnread = !lastSeen || b.booked_at > lastSeen;
       const dateLabel = formatDateLabel(b.dateKey);
-      const [h, m] = b.time.split(':').map(Number);
-      const endTotal = h * 60 + m + 30;
-      const endTime = `${String(Math.floor(endTotal / 60)).padStart(2, '0')}:${String(endTotal % 60).padStart(2, '0')}`;
-      const slotLabel = `${dateLabel} ${b.time}-${endTime}`;
+      const slotLabel = `${dateLabel} ${b.startTime}-${b.endTime}`;
       const row = el('div', { class: 'recent-row' + (isUnread ? ' is-unread' : '') });
       row.appendChild(el('div', { class: 'recent-row-main' },
         el('span', { class: 'recent-student' }, b.student_name),
@@ -784,6 +812,9 @@ async function onStudentBook(datetime, time) {
       renderMain();
     }
   });
+  // 兜底:不論成功失敗,從 server 拉 ground truth,確保 client 跟 server 對齊
+  // 修「老師端看有但學生端沒已約」(GAS 寫入成功但 client 沒收到 ok / polling race 沒救回)
+  try { await refreshCalendar(); } catch (e) {}
 }
 
 // =========================================================================
@@ -1066,6 +1097,7 @@ async function adminUnbook(datetime) {
       renderMain();
     }
   });
+  try { await refreshCalendar(); } catch (e) {}
 }
 
 function startReschedule(fromDt, slot) {
@@ -1125,6 +1157,7 @@ async function doReschedule(fromDt, toDt) {
       renderMain();
     }
   });
+  try { await refreshCalendar(); } catch (e) {}
 }
 
 // =========================================================================
