@@ -111,7 +111,39 @@ function isoFromDate(d) {
   return Utilities.formatDate(d, TZ, "yyyy-MM-dd'T'HH:mm");
 }
 
+// 由 datetime 字串反向算出該 slot 在 sheet 中的 rowIndex(避免每次寫入都讀整張 2392 row sheet)
+// sheet 結構:row 1 是 header,row 2 起按 (RANGE_START + 每天 26 格) 順序排
+const SLOTS_PER_DAY = (HOURS_END - HOURS_START) * (60 / SLOT_MINUTES); // 26
+const RANGE_START_MS = new Date(`${RANGE_START}T12:00:00+08:00`).getTime();
+
+function rowIndexForDatetime(datetime) {
+  if (!datetime || datetime.length < 16) return -1;
+  const date = datetime.slice(0, 10);
+  const hh = parseInt(datetime.slice(11, 13), 10);
+  const mm = parseInt(datetime.slice(14, 16), 10);
+  if (isNaN(hh) || isNaN(mm) || mm % SLOT_MINUTES !== 0) return -1;
+  const targetMs = new Date(`${date}T12:00:00+08:00`).getTime();
+  if (isNaN(targetMs)) return -1;
+  const dayDiff = Math.round((targetMs - RANGE_START_MS) / 86400000);
+  const slotInDay = (hh - HOURS_START) * (60 / SLOT_MINUTES) + (mm / SLOT_MINUTES);
+  if (dayDiff < 0 || slotInDay < 0 || slotInDay >= SLOTS_PER_DAY) return -1;
+  return 2 + dayDiff * SLOTS_PER_DAY + slotInDay;
+}
+
+// 讀單一 slot(快很多 — 1 row vs 整張 2392 row,~100ms vs ~1-2s)
+function readSingleSlot(sheet, datetime) {
+  const rowIndex = rowIndexForDatetime(datetime);
+  if (rowIndex < 0) return null;
+  const values = sheet.getRange(rowIndex, 1, 1, SLOT_HEADERS.length).getValues()[0];
+  if (!(values[0] instanceof Date)) return null;
+  // 驗證 datetime 確實對得上 row(防 RANGE_START 改過或 sheet 被手動編輯)
+  const iso = isoFromDate(values[0]);
+  if (iso !== datetime) return null;
+  return { rowIndex, values, iso };
+}
+
 // 讀整張 slots sheet,回傳 sheet 物件 + 原始 row 陣列 + iso → row 索引
+// 用於 admin_calendar / get_calendar(必須拿全部);batch ≥10 datetimes 也用這個
 function readSlots() {
   const sheet = getSS().getSheetByName(SLOTS_SHEET);
   if (!sheet) throw new Error(`${SLOTS_SHEET} sheet 不存在,請先執行 initializeSheets()`);
@@ -192,8 +224,9 @@ function book(code, datetime) {
     const student = findStudent(code);
     if (!student) return errResp('invalid_code');
 
-    const { sheet, byIso } = readSlots();
-    const slot = byIso[datetime];
+    const sheet = getSS().getSheetByName(SLOTS_SHEET);
+    if (!sheet) throw new Error(`${SLOTS_SHEET} sheet 不存在`);
+    const slot = readSingleSlot(sheet, datetime);
     if (!slot) return errResp('slot_not_found', datetime);
     if (slot.values[1] !== 'available') {
       return errResp('slot_taken', `current status: ${slot.values[1]}`);
@@ -244,8 +277,9 @@ function setBlocked(key, datetime, blocked) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return errResp('busy_try_again');
   try {
-    const { sheet, byIso } = readSlots();
-    const slot = byIso[datetime];
+    const sheet = getSS().getSheetByName(SLOTS_SHEET);
+    if (!sheet) throw new Error(`${SLOTS_SHEET} sheet 不存在`);
+    const slot = readSingleSlot(sheet, datetime);
     if (!slot) return errResp('slot_not_found');
 
     const cur = slot.values[1];
@@ -278,7 +312,19 @@ function setBlockedBatch(key, datetimes, blocked) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(15000)) return errResp('busy_try_again');
   try {
-    const { sheet, byIso } = readSlots();
+    // < 10 個用 single row read(每個 ~100ms,適合單格 click 透過 batch 走);≥10 用 readSlots 整張
+    const sheet = getSS().getSheetByName(SLOTS_SHEET);
+    if (!sheet) throw new Error(`${SLOTS_SHEET} sheet 不存在`);
+    let byIso;
+    if (datetimes.length < 10) {
+      byIso = {};
+      datetimes.forEach(dt => {
+        const s = readSingleSlot(sheet, dt);
+        if (s) byIso[dt] = s;
+      });
+    } else {
+      byIso = readSlots().byIso;
+    }
     const results = [];
     let changed = 0;
     datetimes.forEach(dt => {
@@ -317,8 +363,9 @@ function unbook(key, datetime) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return errResp('busy_try_again');
   try {
-    const { sheet, byIso } = readSlots();
-    const slot = byIso[datetime];
+    const sheet = getSS().getSheetByName(SLOTS_SHEET);
+    if (!sheet) throw new Error(`${SLOTS_SHEET} sheet 不存在`);
+    const slot = readSingleSlot(sheet, datetime);
     if (!slot) return errResp('slot_not_found');
     if (slot.values[1] !== 'booked') return errResp('slot_not_booked', `current: ${slot.values[1]}`);
 
@@ -339,9 +386,10 @@ function reschedule(key, fromDt, toDt) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return errResp('busy_try_again');
   try {
-    const { sheet, byIso } = readSlots();
-    const fromSlot = byIso[fromDt];
-    const toSlot = byIso[toDt];
+    const sheet = getSS().getSheetByName(SLOTS_SHEET);
+    if (!sheet) throw new Error(`${SLOTS_SHEET} sheet 不存在`);
+    const fromSlot = readSingleSlot(sheet, fromDt);
+    const toSlot = readSingleSlot(sheet, toDt);
     if (!fromSlot || !toSlot) return errResp('slot_not_found');
     if (fromSlot.values[1] !== 'booked') return errResp('from_not_booked');
     if (toSlot.values[1] !== 'available') return errResp('to_not_available', `target status: ${toSlot.values[1]}`);
