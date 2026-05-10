@@ -205,6 +205,7 @@ function book(code, datetime) {
       student.name,
       new Date(),
     ]]);
+    SpreadsheetApp.flush(); // 強制 commit sheet 寫入,避免 release lock 後 polling refresh 拿到 stale buffer
     bumpVersion();
     return okResp({ datetime, status: 'mine', student_name: student.name });
   } finally {
@@ -252,11 +253,13 @@ function setBlocked(key, datetime, blocked) {
       if (cur === 'booked') return errResp('slot_booked_cannot_block', '請先 unbook 再 block');
       if (cur === 'blocked') return okResp({ datetime, status: 'blocked', noop: true });
       sheet.getRange(slot.rowIndex, 2).setValue('blocked');
+      SpreadsheetApp.flush();
       bumpVersion();
       return okResp({ datetime, status: 'blocked' });
     } else {
       if (cur !== 'blocked') return errResp('slot_not_blocked', `current: ${cur}`);
       sheet.getRange(slot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
+      SpreadsheetApp.flush();
       bumpVersion();
       return okResp({ datetime, status: 'available' });
     }
@@ -297,7 +300,10 @@ function setBlockedBatch(key, datetimes, blocked) {
         results.push({ datetime: dt, ok: true, status: 'available' });
       }
     });
-    if (changed > 0) bumpVersion();
+    if (changed > 0) {
+      SpreadsheetApp.flush(); // ⭐ 修「過幾秒部分變未封鎖」race:不 flush 會讓 polling refresh 拿到 stale buffer
+      bumpVersion();
+    }
     return okResp({ results, changed });
   } finally {
     lock.releaseLock();
@@ -317,6 +323,7 @@ function unbook(key, datetime) {
     if (slot.values[1] !== 'booked') return errResp('slot_not_booked', `current: ${slot.values[1]}`);
 
     sheet.getRange(slot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
+    SpreadsheetApp.flush();
     bumpVersion();
     return okResp({ datetime, status: 'available' });
   } finally {
@@ -343,6 +350,7 @@ function reschedule(key, fromDt, toDt) {
     const name = fromSlot.values[3];
     sheet.getRange(toSlot.rowIndex, 2, 1, 4).setValues([['booked', code, name, new Date()]]);
     sheet.getRange(fromSlot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
+    SpreadsheetApp.flush();
     bumpVersion();
     return okResp({ from: fromDt, to: toDt, code, student_name: name });
   } finally {
@@ -380,6 +388,7 @@ function createStudent(key, name, email, customCode) {
   }
 
   sheet.appendRow([code, trimmedName, email ? String(email).trim() : '', new Date(), '']);
+  SpreadsheetApp.flush();
   bumpVersion();
   return okResp({ invite_code: code, name: trimmedName, email: email || '' });
 }
@@ -398,6 +407,7 @@ function deleteStudent(key, code) {
   for (let i = 0; i < rows.length; i++) {
     if (String(rows[i][0]).trim().toLowerCase() === target) {
       sheet.deleteRow(i + 2);
+      SpreadsheetApp.flush();
       bumpVersion();
       return okResp({ deleted: rows[i][0], name: rows[i][1] });
     }
