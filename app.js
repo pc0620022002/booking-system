@@ -812,9 +812,6 @@ async function onStudentBook(datetime, time) {
       renderMain();
     }
   });
-  // 兜底:不論成功失敗,從 server 拉 ground truth,確保 client 跟 server 對齊
-  // 修「老師端看有但學生端沒已約」(GAS 寫入成功但 client 沒收到 ok / polling race 沒救回)
-  try { await refreshCalendar(); } catch (e) {}
 }
 
 // =========================================================================
@@ -959,15 +956,18 @@ async function runBlockBatch(items) {
     else unblockDts.push(dt);
   });
 
-  const tasks = [];
-  if (blockDts.length) tasks.push(sendBlockBatch(blockDts, true));
-  if (unblockDts.length) tasks.push(sendBlockBatch(unblockDts, false));
-  if (tasks.length === 0) { __batchTrace = '(no-op)'; updateBatchOverlay(); return; }
+  if (blockDts.length === 0 && unblockDts.length === 0) {
+    __batchTrace = '(no-op)'; updateBatchOverlay(); return;
+  }
 
   const t0 = Date.now();
   __batchTrace = `送出 ${blockDts.length}b/${unblockDts.length}u...`;
   updateBatchOverlay();
-  const allResults = (await Promise.all(tasks)).flat();
+  // 不要 Promise.all 並發送 block + unblock — GAS 對同 client 並發 POST 不保證 sequential 處理,
+  // 如果 unblock 先 acquire lock 讀到 sheet 還沒被 block 寫入,會誤判 slot_not_blocked
+  const allResults = [];
+  if (blockDts.length) allResults.push(...(await sendBlockBatch(blockDts, true)));
+  if (unblockDts.length) allResults.push(...(await sendBlockBatch(unblockDts, false)));
   const elapsed = Date.now() - t0;
   const failures = allResults.filter(r => !r.ok);
   const successCount = allResults.length - failures.length;
@@ -1097,7 +1097,6 @@ async function adminUnbook(datetime) {
       renderMain();
     }
   });
-  try { await refreshCalendar(); } catch (e) {}
 }
 
 function startReschedule(fromDt, slot) {
@@ -1157,7 +1156,6 @@ async function doReschedule(fromDt, toDt) {
       renderMain();
     }
   });
-  try { await refreshCalendar(); } catch (e) {}
 }
 
 // =========================================================================
