@@ -851,18 +851,20 @@ let __batchTrace = '-'; // 最近一次 batch 的結果摘要,顯示在 admin ov
 let __mutationInFlight = 0;
 async function withMutationGuard(fn) {
   __mutationInFlight++;
-  showMutationIndicator();
-  // 5 秒還沒回應就改文案告訴 user「server 慢」(GAS Web App cold start 可達 30+ 秒,
-  // 不提示 user 會以為「沒反應」)
+  // 500ms 後才顯示 indicator(GAS 加速後大部分 mutation < 500ms 完成,根本不會跳出來打擾)
+  let shown = false;
+  const showTimer = setTimeout(() => { showMutationIndicator(); shown = true; }, 500);
+  // 仍卡 5 秒以上 → 改文案讓 user 知道是 server 慢(GAS cold start 偶發)
   const slowTimer = setTimeout(() => {
     const el = document.getElementById('mut-indicator');
-    if (el) el.textContent = '⏳ Server 回應較慢,請稍候...(首次喚醒可能 30 秒)';
+    if (el) el.textContent = '⏳ 處理較久,請稍候...';
   }, 5000);
   try { return await fn(); }
   finally {
+    clearTimeout(showTimer);
     clearTimeout(slowTimer);
     __mutationInFlight--;
-    if (__mutationInFlight === 0) hideMutationIndicator();
+    if (__mutationInFlight === 0 && shown) hideMutationIndicator();
   }
 }
 
