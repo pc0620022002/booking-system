@@ -630,11 +630,65 @@ function renderWeekNav() {
   const next = el('button', { class: 'btn-secondary nav-btn', onclick: gotoNextWeek }, '下週 →');
   if (state.selectedWeek === state.weeks.length - 1) next.disabled = true;
 
-  return el('div', { class: 'week-nav' },
-    prev,
-    el('span', { class: 'week-label' }, label),
-    next,
+  return el('div', { class: 'nav-wrap' },
+    renderMonthJump(),
+    el('div', { class: 'week-nav' },
+      prev,
+      el('span', { class: 'week-label' }, label),
+      next,
+    ),
   );
+}
+
+// 月份快速跳轉:列出 range 內所有月份,點擊跳到該月第一個有 in-range 天的週
+function renderMonthJump() {
+  const monthsInRange = [];
+  const firstWeekOfMonth = {};
+  state.weeks.forEach((w, idx) => {
+    w.days.forEach(d => {
+      if (!d.inRange) return;
+      if (firstWeekOfMonth[d.month] == null) {
+        firstWeekOfMonth[d.month] = idx;
+        monthsInRange.push(d.month);
+      }
+    });
+  });
+
+  const activeMonth = monthOfWeek(state.weeks[state.selectedWeek]);
+
+  return el('div', { class: 'month-jump' },
+    el('span', { class: 'month-jump-label' }, '跳到:'),
+    ...monthsInRange.map(m => {
+      const isActive = m === activeMonth;
+      const btn = el('button', {
+        class: 'month-jump-btn' + (isActive ? ' active' : ''),
+        onclick: () => gotoMonth(m),
+      }, `${m} 月`);
+      if (isActive) btn.disabled = true;
+      return btn;
+    }),
+  );
+}
+
+// 用該週「in-range 範圍內最大的月份」代表這週。跨月週(例如 7/26-8/1)會被算成 8,
+// 避免「點 8 月按鈕但沒跳」的死按鈕情境;沒有 in-range 天(理論上不會)則 fallback 用週三
+function monthOfWeek(week) {
+  let maxMonth = null;
+  week.days.forEach(d => {
+    if (!d.inRange) return;
+    if (maxMonth == null || d.month > maxMonth) maxMonth = d.month;
+  });
+  return maxMonth != null ? maxMonth : week.days[3].month;
+}
+
+function gotoMonth(month) {
+  const targetIdx = state.weeks.findIndex(w =>
+    w.days.some(d => d.inRange && d.month === month)
+  );
+  if (targetIdx >= 0 && targetIdx !== state.selectedWeek) {
+    state.selectedWeek = targetIdx;
+    renderMain();
+  }
 }
 
 function gotoPrevWeek() {

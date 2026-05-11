@@ -204,11 +204,13 @@ code {
 }
 
 /* === Week navigation === */
+.nav-wrap {
+  margin-bottom: 12px;
+}
 .week-nav {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
   gap: 12px;
 }
 .week-label {
@@ -219,6 +221,38 @@ code {
 }
 .nav-btn {
   white-space: nowrap;
+}
+
+/* === Month quick jump === */
+.month-jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.month-jump-label {
+  font-size: 13px;
+  color: #666;
+}
+.month-jump-btn {
+  background: #fff;
+  border: 1px solid #cfd8dc;
+  border-radius: 14px;
+  padding: 3px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #37474f;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.month-jump-btn:hover:not(:disabled) {
+  background: #eceff1;
+}
+.month-jump-btn.active {
+  background: #1976d2;
+  color: #fff;
+  border-color: #1976d2;
+  cursor: default;
 }
 
 /* === Week table === */
@@ -373,6 +407,8 @@ body.reschedule-mode .week-table td.slot-available {
   .week-table td.slot { height: 40px; padding: 4px 3px; }
   .week-table .date-col .date { font-size: 13px; }
   .week-label { font-size: 13px; }
+  .month-jump-btn { font-size: 12px; padding: 2px 10px; }
+  .month-jump-label { font-size: 12px; }
 }
 
 /* 手機:讓整個一週表格塞進螢幕,不再橫向 scroll
