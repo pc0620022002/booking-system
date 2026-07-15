@@ -30,6 +30,7 @@ const state = {
   weeks: null,        // [{ days: [{dateKey, inRange, weekday, dayNum, month}, ...] }, ...]
   selectedWeek: null,
   lastVersion: null,  // 後端 data version,polling 比對是否變動
+  minServerVersion: 0, // 本 client 最近一次寫入成功時 server 回的版本;refresh 回應比這舊 = 寫入前的舊快照,一律丟棄
 };
 
 let rescheduleFromDt = null;
@@ -187,8 +188,16 @@ async function tryLoginStudent(code) {
     if (!res.ok) return false;
     state.inviteCode = code;
     state.studentName = res.data.student.name;
+    // 等回應的 1-2 秒間 user 又點了格子(樂觀狀態 + 寫入還在飛),或這份快照比
+    // 最近一次寫入舊 → 整包套用會把樂觀狀態 / 剛寫入的結果洗掉 → 丟棄本次回應,
+    // 不動 lastVersion,下一輪 polling(等寫入結束後)會再拉一份新的
+    if (hasInFlightWork() || isStaleCalendarResponse(res.data.version)) {
+      noteRefreshTrace('丟棄' + (hasInFlightWork() ? '(寫入中)' : '(舊快照)'));
+      return true;
+    }
     state.calendar = res.data.days;
     if (res.data.version) state.lastVersion = res.data.version;
+    noteRefreshTrace('套用');
     return true;
   } catch (err) {
     console.error('login error', err);
@@ -203,8 +212,15 @@ async function loadAdminCalendar() {
       alert('無法載入老師後台:' + humanError(res.error, res.msg));
       return false;
     }
+    // 理由同 tryLoginStudent:回應落地時有寫入在飛 / 快照比最近寫入舊 → 丟棄,防止
+    // 整包覆蓋把樂觀狀態洗掉(「按下去又自己復原」的 root cause 之一)
+    if (hasInFlightWork() || isStaleCalendarResponse(res.data.version)) {
+      noteRefreshTrace('丟棄' + (hasInFlightWork() ? '(寫入中)' : '(舊快照)'));
+      return true;
+    }
     state.calendar = res.data.days;
     if (res.data.version) state.lastVersion = res.data.version;
+    noteRefreshTrace('套用');
     return true;
   } catch (err) {
     alert('API 連線失敗:' + err.message);
@@ -217,6 +233,21 @@ async function refreshCalendar() {
   else await tryLoginStudent(state.inviteCode);
   renderMain();
   if (rescheduleFromDt) showRescheduleBanner();
+}
+
+// 寫入成功後記下 server 回的新版本(GAS 寫入 endpoint 回應帶 version;舊版 GAS 沒帶則 no-op)
+function noteServerVersion(v) {
+  const n = Number(v);
+  if (n && n > state.minServerVersion) state.minServerVersion = n;
+}
+
+// refresh 回應是否為「比本 client 最近一次寫入還舊」的快照:
+// GAS 讀整張 sheet 要 1-2 秒,回應可能是在我的寫入 commit 之前讀的 — 套用會把剛寫好的
+// 格子洗回舊狀態(視覺上「按下去又自己復原」)。帶著舊版本號的回應一律丟棄。
+// 回應沒帶 version(舊版 GAS)時不判斷,維持原行為。
+function isStaleCalendarResponse(v) {
+  const n = Number(v);
+  return !!(n && state.minServerVersion && n < state.minServerVersion);
 }
 
 // 樂觀更新:就地改 state.calendar 內對應 slot 的欄位,免去重抓整張 calendar
@@ -282,9 +313,12 @@ async function checkVersionAndMaybeRefresh() {
   try {
     const res = await api.get('version', {});
     if (!res.ok) return;
+    // 等 version 回應期間 user 開始點格子 → 這輪不 refresh(refresh 回應落地時還有一層丟棄保護)
+    if (hasInFlightWork()) return;
     const newVer = res.data.version;
     if (newVer && newVer !== state.lastVersion) {
-      state.lastVersion = newVer;
+      // 不在這裡先動 state.lastVersion — 等 refresh 的 calendar 回應真的「套用」時才更新。
+      // 若先更新而 refresh 回應被丟棄(寫入中 / 舊快照),polling 會誤以為已同步,舊畫面永久卡住
       await refreshCalendar();
     }
   } catch (err) {
@@ -854,6 +888,7 @@ async function onStudentBook(datetime, time) {
     try {
       const res = await api.post('book', { code: state.inviteCode, datetime });
       if (res.ok) {
+        noteServerVersion(res.data && res.data.version);
         toast('預約成功');
       } else {
         toast('預約失敗:' + humanError(res.error, res.msg), 'error');
@@ -899,9 +934,18 @@ const blockBatchQueue = {
 };
 
 let __batchTrace = '-'; // 最近一次 batch 的結果摘要,顯示在 admin overlay
+let __refreshTrace = '-'; // 最近一次 calendar refresh 回應的處置(套用 / 丟棄+原因),顯示在 admin overlay
+
+function noteRefreshTrace(label) {
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2, '0');
+  const mm = String(t.getMinutes()).padStart(2, '0');
+  const ss = String(t.getSeconds()).padStart(2, '0');
+  __refreshTrace = `${label} ${hh}:${mm}:${ss}`;
+  updateBatchOverlay();
+}
 
 // 全域 mutation counter:任何 client 發起的寫入(student book / admin unbook / reschedule / createStudent / deleteStudent)在飛期間 polling 必須 skip,避免拉到 sheet 還沒 flush 的 stale 狀態
-// + 把 state.lastVersion 對齊到 server 新版本 → 後續 polling 不再 refresh → 「不會自動回復」
 let __mutationInFlight = 0;
 async function withMutationGuard(fn) {
   __mutationInFlight++;
@@ -957,7 +1001,7 @@ function updateBatchOverlay() {
   const q = blockBatchQueue.pending.size;
   const f = blockBatchQueue.inFlight ? 'Y' : 'n';
   const t = blockBatchQueue.timer != null ? 'Y' : 'n';
-  o.textContent = `${window.__assetVersion || '?'} | q${q} f${f} t${t} | ${__batchTrace}`;
+  o.textContent = `${window.__assetVersion || '?'} | q${q} f${f} t${t} | ${__batchTrace} | r:${__refreshTrace}`;
 }
 setInterval(() => { if (state.isAdmin) updateBatchOverlay(); }, 200);
 
@@ -1065,6 +1109,7 @@ async function sendBlockBatch(datetimes, makeBlocked) {
       }
       return datetimes.map(dt => ({ datetime: dt, ok: false, error: res.error || 'unknown' }));
     }
+    noteServerVersion(res.data.version); // 記住寫入後版本,比這舊的 refresh 快照一律丟棄
     return res.data.results || [];
   } catch (err) {
     return datetimes.map(dt => ({ datetime: dt, ok: false, error: 'network_error' }));
@@ -1077,8 +1122,10 @@ async function sendBlockSequentialFallback(datetimes, makeBlocked) {
   for (const dt of datetimes) {
     try {
       const res = await api.post(action, { admin_key: state.adminKey, datetime: dt });
-      if (res.ok) out.push({ datetime: dt, ok: true, status: makeBlocked ? 'blocked' : 'available' });
-      else out.push({ datetime: dt, ok: false, error: res.error || 'unknown' });
+      if (res.ok) {
+        noteServerVersion(res.data && res.data.version);
+        out.push({ datetime: dt, ok: true, status: makeBlocked ? 'blocked' : 'available' });
+      } else out.push({ datetime: dt, ok: false, error: res.error || 'unknown' });
     } catch (err) {
       out.push({ datetime: dt, ok: false, error: 'network_error' });
     }
@@ -1141,6 +1188,7 @@ async function adminUnbook(datetime) {
     try {
       const res = await api.post('unbook', { admin_key: state.adminKey, datetime });
       if (res.ok) {
+        noteServerVersion(res.data && res.data.version);
         toast('已取消預約');
       } else {
         toast('失敗:' + humanError(res.error, res.msg), 'error');
@@ -1198,6 +1246,7 @@ async function doReschedule(fromDt, toDt) {
     try {
       const res = await api.post('reschedule', { admin_key: state.adminKey, from_dt: fromDt, to_dt: toDt });
       if (res.ok) {
+        noteServerVersion(res.data && res.data.version);
         toast('已改期');
       } else {
         toast('改期失敗:' + humanError(res.error, res.msg), 'error');
@@ -1703,7 +1752,13 @@ function mockBook(code, datetime) {
   const student = findMockStudent(code);
   if (!student) return { ok: false, error: 'invalid_code' };
   const slot = mockData.slots[datetime];
-  if (slot && slot.status !== 'available') return { ok: false, error: 'slot_taken' };
+  if (slot && slot.status !== 'available') {
+    // 冪等:已被「自己」預約 → 當成功(跟正式 GAS 行為一致)
+    if (slot.status === 'booked' && String(slot.invite_code).toLowerCase() === String(student.invite_code).toLowerCase()) {
+      return { ok: true, data: { datetime, status: 'mine', student_name: student.name, noop: true } };
+    }
+    return { ok: false, error: 'slot_taken' };
+  }
   // 寫入用 sheet 裡的原始大小寫
   mockData.slots[datetime] = { status: 'booked', invite_code: student.invite_code, student_name: student.name };
   return { ok: true, data: { datetime, status: 'mine', student_name: student.name } };
@@ -1718,7 +1773,9 @@ function mockSetBlocked(adminKey, datetime, makeBlocked) {
     return { ok: true, data: { datetime, status: 'blocked' } };
   }
   const slot = mockData.slots[datetime];
-  if (!slot || slot.status !== 'blocked') return { ok: false, error: 'slot_not_blocked' };
+  // 冪等:已是 available 就當成功(跟正式 GAS 行為一致)
+  if (!slot) return { ok: true, data: { datetime, status: 'available', noop: true } };
+  if (slot.status !== 'blocked') return { ok: false, error: 'slot_not_blocked' };
   delete mockData.slots[datetime];
   return { ok: true, data: { datetime, status: 'available' } };
 }
@@ -1737,7 +1794,9 @@ function mockSetBlockedBatch(adminKey, datetimes, blocked) {
       changed++;
       results.push({ datetime: dt, ok: true, status: 'blocked' });
     } else {
-      if (!slot || slot.status !== 'blocked') { results.push({ datetime: dt, ok: false, error: 'slot_not_blocked' }); return; }
+      // 冪等:已是 available 就當成功(跟正式 GAS 行為一致)
+      if (!slot) { results.push({ datetime: dt, ok: true, status: 'available', noop: true }); return; }
+      if (slot.status !== 'blocked') { results.push({ datetime: dt, ok: false, error: 'slot_not_blocked' }); return; }
       delete mockData.slots[dt];
       changed++;
       results.push({ datetime: dt, ok: true, status: 'available' });
@@ -1749,7 +1808,9 @@ function mockSetBlockedBatch(adminKey, datetimes, blocked) {
 function mockUnbook(adminKey, datetime) {
   if (adminKey !== mockData.adminKey) return { ok: false, error: 'admin_key invalid' };
   const slot = mockData.slots[datetime];
-  if (!slot || slot.status !== 'booked') return { ok: false, error: 'slot_not_booked' };
+  // 冪等:已是 available → 當成功(跟正式 GAS 行為一致)
+  if (!slot) return { ok: true, data: { datetime, status: 'available', noop: true } };
+  if (slot.status !== 'booked') return { ok: false, error: 'slot_not_booked' };
   delete mockData.slots[datetime];
   return { ok: true, data: { datetime, status: 'available' } };
 }

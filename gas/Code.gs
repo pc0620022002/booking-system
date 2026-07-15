@@ -99,7 +99,11 @@ function requireAdmin(key) {
 const VERSION_KEY = 'data_version';
 
 function bumpVersion() {
-  PropertiesService.getScriptProperties().setProperty(VERSION_KEY, String(Date.now()));
+  // 回傳新版本讓寫入 endpoint 帶回 client:client 記住「我至少要看到這個版本」,
+  // 之後 refresh 若拿到比這舊的 calendar 快照就丟棄,不讓舊快照把剛寫入的狀態洗掉
+  const v = String(Date.now());
+  PropertiesService.getScriptProperties().setProperty(VERSION_KEY, v);
+  return v;
 }
 
 function getVersion() {
@@ -193,6 +197,11 @@ function getCalendar(code) {
   const student = findStudent(code);
   if (!student) return errResp('invalid_code');
 
+  // ⭐ 版本要在讀資料「之前」取:讀整張 sheet 要 1-2 秒,期間若有寫入 commit,
+  // 「先資料後版本」會回出「舊資料 + 新版本」→ client 把版本對齊到新的之後
+  // polling 再也偵測不到差異,舊畫面永遠卡住(只能手動重整)。
+  // 先版本後資料頂多「新資料配舊版本」→ 下一輪 polling 多刷一次,無害。
+  const version = getVersion();
   const { rows } = readSlots();
   const days = {};
   rows.forEach(r => {
@@ -211,7 +220,7 @@ function getCalendar(code) {
     if (!days[dateKey]) days[dateKey] = [];
     days[dateKey].push({ time, status: view });
   });
-  return okResp({ days, student: { name: student.name, code }, version: getVersion() });
+  return okResp({ days, student: { name: student.name, code }, version });
 }
 
 function book(code, datetime) {
@@ -229,6 +238,11 @@ function book(code, datetime) {
     const slot = readSingleSlot(sheet, datetime);
     if (!slot) return errResp('slot_not_found', datetime);
     if (slot.values[1] !== 'available') {
+      // 冪等:已被「自己」預約(畫面暫時舊、學生再按一次)→ 當成功,不回錯誤
+      if (slot.values[1] === 'booked' &&
+          String(slot.values[2]).trim().toLowerCase() === String(student.invite_code).trim().toLowerCase()) {
+        return okResp({ datetime, status: 'mine', student_name: student.name, noop: true, version: getVersion() });
+      }
       return errResp('slot_taken', `current status: ${slot.values[1]}`);
     }
 
@@ -239,8 +253,8 @@ function book(code, datetime) {
       new Date(),
     ]]);
     SpreadsheetApp.flush(); // 強制 commit sheet 寫入,避免 release lock 後 polling refresh 拿到 stale buffer
-    bumpVersion();
-    return okResp({ datetime, status: 'mine', student_name: student.name });
+    const version = bumpVersion();
+    return okResp({ datetime, status: 'mine', student_name: student.name, version });
   } finally {
     lock.releaseLock();
   }
@@ -251,6 +265,8 @@ function book(code, datetime) {
 // ===========================================================================
 function adminCalendar(key) {
   requireAdmin(key);
+  // ⭐ 版本先讀再讀資料,理由同 getCalendar(否則「舊資料+新版本」讓 polling 永久卡舊畫面)
+  const version = getVersion();
   const { rows } = readSlots();
   const days = {};
   rows.forEach(r => {
@@ -267,7 +283,7 @@ function adminCalendar(key) {
       booked_at: r[4] instanceof Date ? r[4].toISOString() : '',
     });
   });
-  return okResp({ days, version: getVersion() });
+  return okResp({ days, version });
 }
 
 function setBlocked(key, datetime, blocked) {
@@ -285,17 +301,20 @@ function setBlocked(key, datetime, blocked) {
     const cur = slot.values[1];
     if (blocked) {
       if (cur === 'booked') return errResp('slot_booked_cannot_block', '請先 unbook 再 block');
-      if (cur === 'blocked') return okResp({ datetime, status: 'blocked', noop: true });
+      if (cur === 'blocked') return okResp({ datetime, status: 'blocked', noop: true, version: getVersion() });
       sheet.getRange(slot.rowIndex, 2).setValue('blocked');
       SpreadsheetApp.flush();
-      bumpVersion();
-      return okResp({ datetime, status: 'blocked' });
+      const version = bumpVersion();
+      return okResp({ datetime, status: 'blocked', version });
     } else {
+      // 冪等:已是 available 就當成功(常見於「前端畫面暫時舊了、user 再按一次」,
+      // 後台其實早就做完 — 回錯誤只會讓前端 rollback + 跳錯誤,user 更混亂)
+      if (cur === 'available') return okResp({ datetime, status: 'available', noop: true, version: getVersion() });
       if (cur !== 'blocked') return errResp('slot_not_blocked', `current: ${cur}`);
       sheet.getRange(slot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
       SpreadsheetApp.flush();
-      bumpVersion();
-      return okResp({ datetime, status: 'available' });
+      const version = bumpVersion();
+      return okResp({ datetime, status: 'available', version });
     }
   } finally {
     lock.releaseLock();
@@ -339,6 +358,8 @@ function setBlockedBatch(key, datetimes, blocked) {
         changed++;
         results.push({ datetime: dt, ok: true, status: 'blocked' });
       } else {
+        // 冪等:已是 available 就當成功(理由同 setBlocked — 畫面暫時舊時 user 重按不該看到錯誤)
+        if (cur === 'available') { results.push({ datetime: dt, ok: true, status: 'available', noop: true }); return; }
         if (cur !== 'blocked') { results.push({ datetime: dt, ok: false, error: 'slot_not_blocked' }); return; }
         sheet.getRange(slot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
         slot.values[1] = 'available';
@@ -346,11 +367,14 @@ function setBlockedBatch(key, datetimes, blocked) {
         results.push({ datetime: dt, ok: true, status: 'available' });
       }
     });
+    let version;
     if (changed > 0) {
       SpreadsheetApp.flush(); // ⭐ 修「過幾秒部分變未封鎖」race:不 flush 會讓 polling refresh 拿到 stale buffer
-      bumpVersion();
+      version = bumpVersion();
+    } else {
+      version = getVersion();
     }
-    return okResp({ results, changed });
+    return okResp({ results, changed, version });
   } finally {
     lock.releaseLock();
   }
@@ -367,12 +391,14 @@ function unbook(key, datetime) {
     if (!sheet) throw new Error(`${SLOTS_SHEET} sheet 不存在`);
     const slot = readSingleSlot(sheet, datetime);
     if (!slot) return errResp('slot_not_found');
+    // 冪等:已是 available(畫面暫時舊、老師再按一次取消)→ 當成功,不回錯誤
+    if (slot.values[1] === 'available') return okResp({ datetime, status: 'available', noop: true, version: getVersion() });
     if (slot.values[1] !== 'booked') return errResp('slot_not_booked', `current: ${slot.values[1]}`);
 
     sheet.getRange(slot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
     SpreadsheetApp.flush();
-    bumpVersion();
-    return okResp({ datetime, status: 'available' });
+    const version = bumpVersion();
+    return okResp({ datetime, status: 'available', version });
   } finally {
     lock.releaseLock();
   }
@@ -399,8 +425,8 @@ function reschedule(key, fromDt, toDt) {
     sheet.getRange(toSlot.rowIndex, 2, 1, 4).setValues([['booked', code, name, new Date()]]);
     sheet.getRange(fromSlot.rowIndex, 2, 1, 4).setValues([['available', '', '', '']]);
     SpreadsheetApp.flush();
-    bumpVersion();
-    return okResp({ from: fromDt, to: toDt, code, student_name: name });
+    const version = bumpVersion();
+    return okResp({ from: fromDt, to: toDt, code, student_name: name, version });
   } finally {
     lock.releaseLock();
   }
